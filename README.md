@@ -12,7 +12,7 @@
 
 | 🇨🇳 中文 | 🇬🇧 English | 🇯🇵 日本語 | 🇰🇷 한국어 |
 |:-:|:-:|:-:|:-:|
-| [简体中文使用说明](#-简体中文---daily-goal) | [English Documentation](#-english---daily-goal) | [日本語ドキュメント](#-日本語---daily-goal) | [한국어 설명서](#-한국어---daily-goal) |
+| [简体中文使用说明](#zh-hans) | [English Documentation](#en) | [日本語ドキュメント](#ja) | [한국어 설명서](#ko) |
 
 </div>
 
@@ -48,6 +48,8 @@
 | 🔒 **Single instance** — 单实例启动 | Double-click launches after first launch focuses existing window |
 
 ---
+
+<a id="zh-hans"></a>
 
 ## 🇨🇳 简体中文 — Daily Goal
 
@@ -90,6 +92,8 @@ src/DailyGoal/bin/Release/net10.0-windows/DailyGoal.exe --ui-self-test        # 
 
 ---
 
+<a id="en"></a>
+
 ## 🇬🇧 English — Daily Goal
 
 ### Overview
@@ -131,6 +135,8 @@ src/DailyGoal/bin/Release/net10.0-windows/DailyGoal.exe --ui-self-test        # 
 
 ---
 
+<a id="ja"></a>
+
 ## 🇯🇵 日本語 — Daily Goal
 
 ### 概要
@@ -171,6 +177,8 @@ src/DailyGoal/bin/Release/net10.0-windows/DailyGoal.exe --ui-self-test        # 
 ```
 
 ---
+
+<a id="ko"></a>
 
 ## 🇰🇷 한국어 — Daily Goal
 
@@ -255,4 +263,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-<p align="center">Made with ❤️ by <a href="https://github.com/xiaoxiao6">xiaoxiao6</a></p>
+<p align="center">Made with ❤️ by <a href="https://github.com/THao712">THao712</a></p>
