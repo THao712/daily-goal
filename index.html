@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Daily Goal</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell" aria-label="Daily Goal 任务应用">
+      <section class="task-panel">
+        <header class="panel-header">
+          <div>
+            <p class="eyebrow">Daily Goal</p>
+            <h1>今天要完成的事</h1>
+          </div>
+          <div class="date-chip" id="todayLabel" aria-label="今天日期"></div>
+        </header>
+
+        <form class="task-form" id="taskForm" autocomplete="off">
+          <label class="sr-only" for="taskInput">添加一个任务</label>
+          <input
+            id="taskInput"
+            name="task"
+            type="text"
+            maxlength="80"
+            placeholder="写下一件要做的工作"
+            required
+          />
+          <button type="submit">添加</button>
+        </form>
+
+        <div class="task-stats" aria-live="polite">
+          <span id="taskCount">0 个待办</span>
+          <button class="clear-button" id="clearButton" type="button">清空</button>
+        </div>
+
+        <ul class="task-list" id="taskList" aria-label="任务列表"></ul>
+
+        <div class="empty-state" id="emptyState">
+          <strong>今天还很清爽。</strong>
+          <span>添加一个任务，让它有个漂亮的完成时刻。</span>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
