@@ -3,16 +3,10 @@ bin/
 obj/
 publish/
 dist/
-app/DailyGoal.exe
-app/DailyGoal.dll
-app/DailyGoal.pdb
-app/DailyGoal.deps.json
-app/DailyGoal.runtimeconfig.json
-app/selftest.txt
-app/particle-selftest.txt
-app/ui-selftest.txt
-app/ui-selftest/
-app/icon.ico
+app/
+
+# Agent tooling
+.agents/
 
 # NuGet
 *.nupkg

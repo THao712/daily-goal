@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DailyGoal</AssemblyName>
+    <RootNamespace>DailyGoal</RootNamespace>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <Version>2.5.0</Version>
+    <AssemblyVersion>2.5.0.0</AssemblyVersion>
+    <FileVersion>2.5.0.0</FileVersion>
+    <Product>Daily Goal</Product>
+    <Company>Daily Goal</Company>
+    <Description>自适应屏幕的本地日常任务清单</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\xuanling-avatar.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\xuanling-scene.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

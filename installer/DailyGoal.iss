@@ -1,10 +1,10 @@
-[#define AppName "Daily Goal"]
-[#define AppVersion "2.5.0"]
-[#define AppPublisher "Daily Goal"]
-[#define AppExeName "DailyGoal.exe"]
+#define AppName "Daily Goal"
+#define AppVersion "2.5.0"
+#define AppPublisher "Daily Goal"
+#define AppExeName "DailyGoal.exe"
 
 [Setup]
-AppId={{58A9578C-EF51-4E72-9F42-C430523A64A1}}
+AppId={{58A9578C-EF51-4E72-9F42-C430523A64A1}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
