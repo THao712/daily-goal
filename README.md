@@ -49,6 +49,16 @@
 
 ---
 
+## 📸 Screenshots / 界面预览 / スクリーンショット / 스크린샷
+
+<p align="center">
+  <img src="screenshots/xuanling-theme.png" width="420" alt="Daily Goal — 玄翎主题界面 / XuanLing theme screenshot" />
+</p>
+
+<p align="center"><i>「玄翎」主题 · 贴边收展 · 昨日未完成任务自动延续<br/>XuanLing theme · edge-docking · unfinished tasks roll over automatically</i></p>
+
+---
+
 <a id="zh-hans"></a>
 
 ## 🇨🇳 简体中文 — Daily Goal
