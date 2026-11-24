@@ -11,9 +11,34 @@ namespace DailyGoal;
 
 internal sealed class TaskFlowPanel : Panel
 {
+	private Image? themeWatermark;
+	private Bitmap? cachedWatermark;
+	private Image? cachedWatermarkSource;
+	private int cachedWatermarkSize;
+
 	[Browsable(false)]
 	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-	public Image? ThemeWatermark { get; set; }
+	public Image? ThemeWatermark
+	{
+		get => themeWatermark;
+		set
+		{
+			if (!ReferenceEquals(themeWatermark, value))
+			{
+				themeWatermark = value;
+				ReleaseWatermarkCache();
+				Invalidate();
+			}
+		}
+	}
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public int ScrollValue
+	{
+		get => scrollBar.Value;
+		set => scrollBar.Value = value;
+	}
 	private readonly List<TaskRowControl> rows = new List<TaskRowControl>();
 
 	private readonly List<Control> footers = new List<Control>();
@@ -240,6 +265,10 @@ internal sealed class TaskFlowPanel : Panel
 		{
 			return;
 		}
+		if (UiTheme.ReduceMotion)
+		{
+			immediate = true;
+		}
 		arranging = true;
 		try
 		{
@@ -412,18 +441,64 @@ internal sealed class TaskFlowPanel : Panel
 	protected override void OnPaintBackground(PaintEventArgs e)
 	{
 		base.OnPaintBackground(e);
-		if (UiTheme.Mode != AppThemeMode.Xuanling || ThemeWatermark is null || rows.Count == 0)
+		if (themeWatermark is null || rows.Count == 0)
 		{
 			return;
 		}
 
-		e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
 		var size = Math.Min(UiTheme.S(205), Math.Min(base.ClientSize.Width / 2, base.ClientSize.Height / 2));
-		var bounds = new Rectangle(base.ClientSize.Width - size - UiTheme.S(18), base.ClientSize.Height - size - UiTheme.S(12), size, size);
-		using var attributes = new ImageAttributes();
-		var matrix = new ColorMatrix { Matrix33 = 0.13f };
-		attributes.SetColorMatrix(matrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-		e.Graphics.DrawImage(ThemeWatermark, bounds, 0, 0, ThemeWatermark.Width, ThemeWatermark.Height, GraphicsUnit.Pixel, attributes);
+		if (size <= 8)
+		{
+			return;
+		}
+
+		var cached = EnsureWatermarkCache(size);
+		if (cached is null)
+		{
+			return;
+		}
+
+		e.Graphics.DrawImageUnscaled(cached, base.ClientSize.Width - size - UiTheme.S(18), base.ClientSize.Height - size - UiTheme.S(12));
+	}
+
+	private Bitmap? EnsureWatermarkCache(int size)
+	{
+		if (themeWatermark is null || size <= 0)
+		{
+			return null;
+		}
+
+		if (cachedWatermark is not null
+			&& ReferenceEquals(cachedWatermarkSource, themeWatermark)
+			&& cachedWatermarkSize == size)
+		{
+			return cachedWatermark;
+		}
+
+		ReleaseWatermarkCache();
+		var bitmap = new Bitmap(size, size, PixelFormat.Format32bppPArgb);
+		using (var graphics = Graphics.FromImage(bitmap))
+		{
+			graphics.Clear(Color.Transparent);
+			graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+			using var attributes = new ImageAttributes();
+			var matrix = new ColorMatrix { Matrix33 = 0.13f };
+			attributes.SetColorMatrix(matrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+			graphics.DrawImage(themeWatermark, new Rectangle(0, 0, size, size), 0, 0, themeWatermark.Width, themeWatermark.Height, GraphicsUnit.Pixel, attributes);
+		}
+
+		cachedWatermark = bitmap;
+		cachedWatermarkSource = themeWatermark;
+		cachedWatermarkSize = size;
+		return cachedWatermark;
+	}
+
+	private void ReleaseWatermarkCache()
+	{
+		cachedWatermark?.Dispose();
+		cachedWatermark = null;
+		cachedWatermarkSource = null;
+		cachedWatermarkSize = 0;
 	}
 
 	protected override void Dispose(bool disposing)
@@ -431,6 +506,7 @@ internal sealed class TaskFlowPanel : Panel
 		if (disposing)
 		{
 			animationTimer.Dispose();
+			ReleaseWatermarkCache();
 		}
 		base.Dispose(disposing);
 	}

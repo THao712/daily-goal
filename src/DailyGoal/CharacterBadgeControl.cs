@@ -28,7 +28,7 @@ internal sealed class CharacterBadgeControl : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        if (UiTheme.Mode != AppThemeMode.Xuanling || CharacterImage is null)
+        if (CharacterImage is null)
         {
             return;
         }

@@ -19,6 +19,31 @@ internal sealed class HistorySummaryControl : Control
 
 	private int streakDays;
 
+	private DateOnly referenceDate = DateOnly.FromDateTime(DateTime.Now);
+
+	private readonly ToolTip hoverTip = new() { InitialDelay = 120, ReshowDelay = 60, AutoPopDelay = 4000 };
+
+	private int hoveredBarIndex = -1;
+
+	private int hoveredHeatIndex = -1;
+
+	private string? lastTipText;
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public DateOnly ReferenceDate
+	{
+		get => referenceDate;
+		set
+		{
+			if (referenceDate != value)
+			{
+				referenceDate = value;
+				Invalidate();
+			}
+		}
+	}
+
 	[Browsable(false)]
 	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
 	public int[] DailyCounts
@@ -79,6 +104,118 @@ internal sealed class HistorySummaryControl : Control
 		pevent.Graphics.Clear(BackColor);
 	}
 
+	protected override void OnMouseMove(MouseEventArgs e)
+	{
+		var barHit = HitTestBar(e.Location);
+		var heatHit = barHit >= 0 ? -1 : HitTestHeat(e.Location);
+		if (barHit != hoveredBarIndex || heatHit != hoveredHeatIndex)
+		{
+			hoveredBarIndex = barHit;
+			hoveredHeatIndex = heatHit;
+			UpdateHoverTip();
+			Invalidate();
+		}
+
+		base.OnMouseMove(e);
+	}
+
+	protected override void OnMouseLeave(EventArgs e)
+	{
+		if (hoveredBarIndex != -1 || hoveredHeatIndex != -1)
+		{
+			hoveredBarIndex = -1;
+			hoveredHeatIndex = -1;
+			UpdateHoverTip();
+			Invalidate();
+		}
+
+		base.OnMouseLeave(e);
+	}
+
+	private void UpdateHoverTip()
+	{
+		string? text = null;
+		if (hoveredBarIndex >= 0 && hoveredBarIndex < 7)
+		{
+			var day = referenceDate.AddDays(hoveredBarIndex - 6);
+			text = $"{day:M 月 d 日} · 完成 {dailyCounts[hoveredBarIndex]} 项";
+		}
+		else if (hoveredHeatIndex >= 0 && hoveredHeatIndex < 35 && heatCells[hoveredHeatIndex] >= 0)
+		{
+			var day = DateForHeatCell(hoveredHeatIndex);
+			text = $"{day:M 月 d 日} · 完成 {heatCells[hoveredHeatIndex]} 项";
+		}
+
+		if (!string.Equals(text, lastTipText, StringComparison.Ordinal))
+		{
+			lastTipText = text;
+			hoverTip.SetToolTip(this, text);
+		}
+	}
+
+	private DateOnly DateForHeatCell(int index)
+	{
+		static int MondayIndex(DayOfWeek day) => day == DayOfWeek.Sunday ? 6 : (int)day - 1;
+		var currentWeekMonday = referenceDate.AddDays(-MondayIndex(referenceDate.DayOfWeek));
+		var week = index / 7;
+		var dayIndex = index % 7;
+		return currentWeekMonday.AddDays(-7 * (4 - week) + dayIndex);
+	}
+
+	private (float GridLeft, float GridTop, float Cell, float Gap) GetHeatMetrics()
+	{
+		var cell = UiTheme.Sf(12f);
+		var gap = UiTheme.Sf(3.4f);
+		var gridWidth = 5 * cell + 4 * gap;
+		var gridHeight = 7 * cell + 6 * gap;
+		var gridLeft = base.Width - UiTheme.S(18) - gridWidth;
+		var gridTop = Math.Max(UiTheme.Sf(40), ((float)base.Height + UiTheme.Sf(28) - gridHeight) / 2f);
+		return (gridLeft, gridTop, cell, gap);
+	}
+
+	private int HitTestHeat(Point location)
+	{
+		var (gridLeft, gridTop, cell, gap) = GetHeatMetrics();
+		for (var index = 0; index < 35; index += 1)
+		{
+			if (heatCells[index] < 0)
+			{
+				continue;
+			}
+
+			var column = index / 7;
+			var rowIndex = index % 7;
+			var rect = new RectangleF(
+				gridLeft + column * (cell + gap) - 1.5f,
+				gridTop + rowIndex * (cell + gap) - 1.5f,
+				cell + 3f,
+				cell + 3f);
+			if (rect.Contains(location))
+			{
+				return index;
+			}
+		}
+
+		return -1;
+	}
+
+	private int HitTestBar(Point location)
+	{
+		var (gridLeft, _, _, _) = GetHeatMetrics();
+		var chartLeft = UiTheme.Sf(16);
+		var chartTop = UiTheme.Sf(44);
+		var chartHeight = (float)base.Height - chartTop - UiTheme.Sf(16);
+		var chartWidth = gridLeft - UiTheme.Sf(34) - chartLeft;
+		if (chartWidth <= 0 || location.X < chartLeft || location.X > chartLeft + chartWidth
+			|| location.Y < chartTop || location.Y > chartTop + chartHeight)
+		{
+			return -1;
+		}
+
+		var step = chartWidth / 7f;
+		return Math.Clamp((int)((location.X - chartLeft) / step), 0, 6);
+	}
+
 	protected override void OnPaint(PaintEventArgs e)
 	{
 		e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -113,12 +250,7 @@ internal sealed class HistorySummaryControl : Control
 		}
 
 		// 右侧热力图（5 列 × 7 行）。
-		var cell = UiTheme.Sf(12f);
-		var gap = UiTheme.Sf(3.4f);
-		var gridWidth = 5 * cell + 4 * gap;
-		var gridHeight = 7 * cell + 6 * gap;
-		var gridLeft = base.Width - UiTheme.S(18) - gridWidth;
-		var gridTop = Math.Max(UiTheme.Sf(40), ((float)base.Height + UiTheme.Sf(28) - gridHeight) / 2f);
+		var (gridLeft, gridTop, cell, gap) = GetHeatMetrics();
 		for (var index = 0; index < 35; index += 1)
 		{
 			var column = index / 7;
@@ -139,17 +271,24 @@ internal sealed class HistorySummaryControl : Control
 			{
 				using var emptyBrush = new SolidBrush(UiTheme.WithAlpha(UiTheme.Border, 110));
 				e.Graphics.FillPath(emptyBrush, cellPath);
-				continue;
+			}
+			else
+			{
+				var alpha = value switch
+				{
+					1 => 92,
+					2 or 3 => 158,
+					_ => 225
+				};
+				using var heatBrush = new SolidBrush(UiTheme.WithAlpha(UiTheme.Mint, alpha));
+				e.Graphics.FillPath(heatBrush, cellPath);
 			}
 
-			var alpha = value switch
+			if (index == hoveredHeatIndex)
 			{
-				1 => 92,
-				2 or 3 => 158,
-				_ => 225
-			};
-			using var heatBrush = new SolidBrush(UiTheme.WithAlpha(UiTheme.Mint, alpha));
-			e.Graphics.FillPath(heatBrush, cellPath);
+				using var hoverPen = new Pen(UiTheme.Text, 1.4f);
+				e.Graphics.DrawPath(hoverPen, cellPath);
+			}
 		}
 
 		// 左侧近 7 天柱状图（避开右侧热力图区域）。
@@ -162,11 +301,22 @@ internal sealed class HistorySummaryControl : Control
 		for (int i = 0; i < 7; i++)
 		{
 			float num6 = Math.Max(UiTheme.Sf(3), chartHeight * (float)DailyCounts[i] / (float)num);
+			var barWidth = i == hoveredBarIndex ? UiTheme.Sf(12) : UiTheme.Sf(10);
 			using GraphicsPath path2 = PaintHelpers.RoundRect(
-				new RectangleF(chartLeft + (float)i * num5 + num5 / 2f - UiTheme.Sf(5), chartTop + chartHeight - num6, UiTheme.Sf(10), num6),
+				new RectangleF(chartLeft + (float)i * num5 + num5 / 2f - barWidth / 2f, chartTop + chartHeight - num6, barWidth, num6),
 				UiTheme.Sf(4));
-			using SolidBrush brush2 = new SolidBrush(UiTheme.WithAlpha(UiTheme.Accent(i), (DailyCounts[i] == 0) ? 54 : 205));
+			using SolidBrush brush2 = new SolidBrush(UiTheme.WithAlpha(UiTheme.Accent(i), (DailyCounts[i] == 0) ? (i == hoveredBarIndex ? 120 : 54) : (i == hoveredBarIndex ? 245 : 205)));
 			e.Graphics.FillPath(brush2, path2);
 		}
+	}
+
+	protected override void Dispose(bool disposing)
+	{
+		if (disposing)
+		{
+			hoverTip.Dispose();
+		}
+
+		base.Dispose(disposing);
 	}
 }

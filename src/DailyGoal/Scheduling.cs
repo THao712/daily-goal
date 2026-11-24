@@ -20,7 +20,7 @@ internal sealed class ScheduleService
         state.LastOpenedDate = today;
 
         var carried = state.Tasks
-            .Where(task => task.IsActive && task.Day < today)
+            .Where(task => task.IsActive && !task.IsInbox && task.Day < today)
             .OrderBy(task => task.Day)
             .ThenBy(task => task.SortOrder)
             .ThenBy(task => task.CreatedAt)

@@ -13,11 +13,80 @@ internal sealed class PeekRail : Control
 
 	private float progress;
 
+	private bool focusActive;
+
+	private bool focusPaused;
+
+	private float focusProgress;
+
+	private string focusBadgeText = "";
+
 	private bool dragCandidate;
 
 	private bool dragging;
 
 	private Point dragStartScreen;
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public bool FocusActive
+	{
+		get => focusActive;
+		set
+		{
+			if (focusActive != value)
+			{
+				focusActive = value;
+				Invalidate();
+			}
+		}
+	}
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public bool FocusPaused
+	{
+		get => focusPaused;
+		set
+		{
+			if (focusPaused != value)
+			{
+				focusPaused = value;
+				Invalidate();
+			}
+		}
+	}
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public float FocusProgress
+	{
+		get => focusProgress;
+		set
+		{
+			var clamped = Math.Clamp(value, 0f, 1f);
+			if (Math.Abs(focusProgress - clamped) > 0.002f)
+			{
+				focusProgress = clamped;
+				Invalidate();
+			}
+		}
+	}
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public string FocusBadgeText
+	{
+		get => focusBadgeText;
+		set
+		{
+			if (!string.Equals(focusBadgeText, value, StringComparison.Ordinal))
+			{
+				focusBadgeText = value;
+				Invalidate();
+			}
+		}
+	}
 
 	[Browsable(false)]
 	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -137,19 +206,37 @@ internal sealed class PeekRail : Control
 		using Pen pen = new Pen(UiTheme.BorderStrong, 1f);
 		e.Graphics.DrawPath(pen, path);
 		RectangleF rectangleF = new RectangleF(UiTheme.Sf(5), UiTheme.Sf(18), base.Width - UiTheme.Sf(10), base.Width - UiTheme.Sf(10));
-		Color badgeColor = Remaining == 0 ? UiTheme.Mint : UiTheme.Blend(UiTheme.Coral, UiTheme.Mint, Progress);
+		Color badgeColor;
+		string badgeText;
+		float barProgress;
+		Color barColor;
+		if (focusActive)
+		{
+			badgeColor = focusPaused ? UiTheme.TextFaint : UiTheme.Sun;
+			badgeText = string.IsNullOrWhiteSpace(focusBadgeText) ? "专注" : focusBadgeText;
+			barProgress = focusProgress;
+			barColor = focusPaused ? UiTheme.TextMuted : UiTheme.Blend(UiTheme.Sun, UiTheme.Mint, focusProgress);
+		}
+		else
+		{
+			badgeColor = Remaining == 0 ? UiTheme.Mint : UiTheme.Blend(UiTheme.Coral, UiTheme.Mint, Progress);
+			badgeText = (Remaining > 99) ? "99" : Remaining.ToString(CultureInfo.InvariantCulture);
+			barProgress = Progress;
+			barColor = UiTheme.Mint;
+		}
 		using SolidBrush brush2 = new SolidBrush(badgeColor);
 		e.Graphics.FillEllipse(brush2, rectangleF);
-	TextRenderer.DrawText(e.Graphics, (Remaining > 99) ? "99" : Remaining.ToString(CultureInfo.InvariantCulture), UiTheme.SmallBoldFont, Rectangle.Round(rectangleF), UiTheme.OnAccent(badgeColor), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+		var badgeFont = badgeText.Length >= 3 ? UiTheme.MicroBoldFont : UiTheme.SmallBoldFont;
+		TextRenderer.DrawText(e.Graphics, badgeText, badgeFont, Rectangle.Round(rectangleF), UiTheme.OnAccent(badgeColor), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 		RectangleF rectangle = new RectangleF((float)base.Width / 2f - UiTheme.Sf(2), UiTheme.Sf(66), UiTheme.Sf(4), Math.Max(UiTheme.Sf(24), base.Height - UiTheme.Sf(118)));
 		using GraphicsPath path2 = PaintHelpers.RoundRect(rectangle, UiTheme.Sf(2));
 		using SolidBrush brush3 = new SolidBrush(UiTheme.WithAlpha(UiTheme.TextFaint, 74));
 		e.Graphics.FillPath(brush3, path2);
-		float num = rectangle.Height * Progress;
+		float num = rectangle.Height * barProgress;
 		if (num > 1f)
 		{
 			using GraphicsPath path3 = PaintHelpers.RoundRect(new RectangleF(rectangle.X, rectangle.Bottom - num, rectangle.Width, num), UiTheme.Sf(2));
-			using SolidBrush brush4 = new SolidBrush(UiTheme.Mint);
+			using SolidBrush brush4 = new SolidBrush(barColor);
 			e.Graphics.FillPath(brush4, path3);
 		}
 		var chevronBounds = new RectangleF(UiTheme.Sf(6), base.Height - UiTheme.Sf(37), base.Width - UiTheme.Sf(12), UiTheme.Sf(20));

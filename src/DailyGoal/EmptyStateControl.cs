@@ -34,7 +34,7 @@ internal sealed class EmptyStateControl : Control
 	protected override void OnPaint(PaintEventArgs e)
 	{
 		e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-		if (UiTheme.Mode == AppThemeMode.Xuanling && CharacterImage is not null)
+		if (CharacterImage is not null)
 		{
 			e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
 			var maximumSize = base.Height >= UiTheme.S(420) ? UiTheme.S(236) : UiTheme.S(154);

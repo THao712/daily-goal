@@ -76,7 +76,7 @@ internal sealed class BackupService
         return false;
     }
 
-    public BackupImportResult ReadPortable(string path, DateOnly today)
+    public BackupImportResult ReadPortable(string path, DateOnly today, int historyRetentionDays = 30)
     {
         try
         {
@@ -94,6 +94,7 @@ internal sealed class BackupService
                 Templates = (backup.Templates ?? []).Select(template => template.Clone()).ToList(),
                 RecurringTasks = (backup.RecurringTasks ?? []).Select(recurring => recurring.Clone()).ToList()
             };
+            importedState.Settings.HistoryRetentionDays = historyRetentionDays;
             importedState.Normalize(today);
             importedState.ApplyDailyRollover(today);
             importedState.PruneHistory(today);

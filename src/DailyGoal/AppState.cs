@@ -34,6 +34,8 @@ internal sealed class AppSettings
 {
     public const int DefaultWindowTopOffset = 12;
     public static readonly int[] UiScaleChoices = [0, 100, 125, 150];
+    public static readonly int[] HistoryRetentionChoices = [30, 90, 0];
+    public static readonly int[] FocusMinuteChoices = [15, 25, 45];
 
     public bool AutoHideEnabled { get; set; } = true;
     public int AutoHideDelayMs { get; set; } = 850;
@@ -51,6 +53,18 @@ internal sealed class AppSettings
     public int ReminderHour { get; set; } = 19;
     /// <summary>界面缩放偏好；0 表示按目标显示器工作区自动适配。</summary>
     public int UiScalePercent { get; set; }
+    /// <summary>点击右上角关闭按钮时收起到边缘/托盘，而非退出进程。</summary>
+    public bool CloseToTray { get; set; } = true;
+    /// <summary>任务完成 / 全部达成 / 专注结束时播放轻柔提示音。</summary>
+    public bool SoundEnabled { get; set; }
+    /// <summary>完成记录保留天数：30 / 90 / 0（永久保留）。</summary>
+    public int HistoryRetentionDays { get; set; } = 30;
+    /// <summary>默认专注计时分钟数（15 / 25 / 45）。</summary>
+    public int DefaultFocusMinutes { get; set; } = 25;
+    /// <summary>自定义角色头像路径（空则使用内置玄翎素材）。</summary>
+    public string? CustomAvatarPath { get; set; }
+    /// <summary>自定义角色场景/水印图路径（空则使用内置玄翎素材）。</summary>
+    public string? CustomScenePath { get; set; }
 
     public bool Normalize()
     {
@@ -100,6 +114,36 @@ internal sealed class AppSettings
             changed = true;
         }
 
+        if (!HistoryRetentionChoices.Contains(HistoryRetentionDays))
+        {
+            HistoryRetentionDays = 30;
+            changed = true;
+        }
+
+        if (!FocusMinuteChoices.Contains(DefaultFocusMinutes))
+        {
+            DefaultFocusMinutes = 25;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(CustomAvatarPath))
+        {
+            if (CustomAvatarPath is not null)
+            {
+                CustomAvatarPath = null;
+                changed = true;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(CustomScenePath))
+        {
+            if (CustomScenePath is not null)
+            {
+                CustomScenePath = null;
+                changed = true;
+            }
+        }
+
         return changed;
     }
 
@@ -121,7 +165,30 @@ internal sealed class AppSettings
             Hotkey = Hotkey,
             ReminderEnabled = ReminderEnabled,
             ReminderHour = ReminderHour,
-            UiScalePercent = UiScalePercent
+            UiScalePercent = UiScalePercent,
+            CloseToTray = CloseToTray,
+            SoundEnabled = SoundEnabled,
+            HistoryRetentionDays = HistoryRetentionDays,
+            DefaultFocusMinutes = DefaultFocusMinutes,
+            CustomAvatarPath = CustomAvatarPath,
+            CustomScenePath = CustomScenePath
+        };
+    }
+}
+
+internal sealed class SubTaskItem
+{
+    public string Id { get; set; } = $"sub-{Guid.NewGuid():N}";
+    public string Text { get; set; } = "";
+    public bool Completed { get; set; }
+
+    public SubTaskItem Clone()
+    {
+        return new SubTaskItem
+        {
+            Id = Id,
+            Text = Text,
+            Completed = Completed
         };
     }
 }
@@ -137,6 +204,18 @@ internal sealed class TaskRecord
     public int CarryCount { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
     public string? RecurrenceId { get; set; }
+    /// <summary>放入「待办箱/稍后做」的任务不绑定具体日期，也不会跨天结转。</summary>
+    public bool IsInbox { get; set; }
+    /// <summary>重点星标任务，自动置顶并微高亮。</summary>
+    public bool IsPinned { get; set; }
+    /// <summary>任务轻量备注。</summary>
+    public string? Notes { get; set; }
+    /// <summary>极简子步骤清单。</summary>
+    public List<SubTaskItem>? SubTasks { get; set; }
+    /// <summary>累计专注分钟数。</summary>
+    public int FocusMinutes { get; set; }
+    /// <summary>累计专注次数。</summary>
+    public int FocusSessions { get; set; }
 
     public bool IsActive => CompletedAt is null;
 
@@ -172,7 +251,13 @@ internal sealed class TaskRecord
             AccentIndex = AccentIndex,
             CarryCount = CarryCount,
             CompletedAt = CompletedAt,
-            RecurrenceId = RecurrenceId
+            RecurrenceId = RecurrenceId,
+            IsInbox = IsInbox,
+            IsPinned = IsPinned,
+            Notes = Notes,
+            SubTasks = SubTasks is null ? null : SubTasks.Select(sub => sub.Clone()).ToList(),
+            FocusMinutes = FocusMinutes,
+            FocusSessions = FocusSessions
         };
     }
 }
@@ -244,7 +329,8 @@ internal sealed class AppState
 
     public IEnumerable<TaskRecord> ActiveTasks => Tasks
         .Where(task => task.IsActive)
-        .OrderBy(task => task.SortOrder)
+        .OrderByDescending(task => task.IsPinned)
+        .ThenBy(task => task.SortOrder)
         .ThenBy(task => task.CreatedAt);
 
     public IEnumerable<TaskRecord> HistoryTasks => Tasks
@@ -254,10 +340,17 @@ internal sealed class AppState
     public IEnumerable<TaskRecord> TasksForDate(DateOnly date)
     {
         return Tasks
-            .Where(task => task.IsActive && task.Day == date)
-            .OrderBy(task => task.SortOrder)
+            .Where(task => task.IsActive && !task.IsInbox && task.Day == date)
+            .OrderByDescending(task => task.IsPinned)
+            .ThenBy(task => task.SortOrder)
             .ThenBy(task => task.CreatedAt);
     }
+
+    public IEnumerable<TaskRecord> InboxTasks => Tasks
+        .Where(task => task.IsActive && task.IsInbox)
+        .OrderByDescending(task => task.IsPinned)
+        .ThenBy(task => task.SortOrder)
+        .ThenBy(task => task.CreatedAt);
 
     public bool Normalize(DateOnly today)
     {
@@ -346,6 +439,88 @@ internal sealed class AppState
                 changed = true;
             }
 
+            if (task.FocusMinutes < 0)
+            {
+                task.FocusMinutes = 0;
+                changed = true;
+            }
+
+            if (task.FocusSessions < 0)
+            {
+                task.FocusSessions = 0;
+                changed = true;
+            }
+
+            if (task.Notes is not null)
+            {
+                var trimmedNotes = task.Notes.Trim();
+                if (string.IsNullOrEmpty(trimmedNotes))
+                {
+                    task.Notes = null;
+                    changed = true;
+                }
+                else if (!string.Equals(trimmedNotes, task.Notes, StringComparison.Ordinal))
+                {
+                    task.Notes = trimmedNotes;
+                    changed = true;
+                }
+            }
+
+            if (task.SubTasks is not null)
+            {
+                var subIds = new HashSet<string>(StringComparer.Ordinal);
+                var cleanedSubs = new List<SubTaskItem>(task.SubTasks.Count);
+                foreach (var sub in task.SubTasks)
+                {
+                    if (sub is null || string.IsNullOrWhiteSpace(sub.Text))
+                    {
+                        changed = true;
+                        continue;
+                    }
+
+                    var trimmedSub = sub.Text.Trim();
+                    if (!string.Equals(trimmedSub, sub.Text, StringComparison.Ordinal))
+                    {
+                        sub.Text = trimmedSub;
+                        changed = true;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(sub.Id) || !subIds.Add(sub.Id))
+                    {
+                        sub.Id = $"sub-{Guid.NewGuid():N}";
+                        subIds.Add(sub.Id);
+                        changed = true;
+                    }
+
+                    cleanedSubs.Add(sub);
+                }
+
+                if (cleanedSubs.Count == 0)
+                {
+                    task.SubTasks = null;
+                    changed = true;
+                }
+                else if (cleanedSubs.Count != task.SubTasks.Count)
+                {
+                    task.SubTasks = cleanedSubs;
+                }
+            }
+
+            if (task.IsInbox && task.IsActive)
+            {
+                if (task.CarryCount != 0)
+                {
+                    task.CarryCount = 0;
+                    changed = true;
+                }
+
+                if (task.RecurrenceId is not null)
+                {
+                    task.RecurrenceId = null;
+                    changed = true;
+                }
+            }
+
             normalizedTasks.Add(task);
         }
 
@@ -380,9 +555,15 @@ internal sealed class AppState
         return new ScheduleService().ApplyRollover(this, today);
     }
 
-    public bool PruneHistory(DateOnly today, int retentionDays = 30)
+    public bool PruneHistory(DateOnly today, int? retentionDays = null)
     {
-        var oldestDate = today.AddDays(-(Math.Max(1, retentionDays) - 1));
+        var effectiveDays = retentionDays ?? Settings.HistoryRetentionDays;
+        if (effectiveDays <= 0)
+        {
+            return false;
+        }
+
+        var oldestDate = today.AddDays(-(Math.Max(1, effectiveDays) - 1));
         var removed = Tasks.RemoveAll(task =>
             task.CompletedAt is not null
             && DateOnly.FromDateTime(task.CompletedAt.Value.LocalDateTime) < oldestDate);
@@ -392,9 +573,28 @@ internal sealed class AppState
     public bool NormalizeActiveSortOrders()
     {
         var changed = false;
-        foreach (var day in Tasks.Where(task => task.IsActive).Select(task => task.Day).Distinct())
+        foreach (var day in Tasks.Where(task => task.IsActive && !task.IsInbox).Select(task => task.Day).Distinct())
         {
             changed |= NormalizeSortOrders(day);
+        }
+
+        changed |= NormalizeInboxSortOrders();
+        return changed;
+    }
+
+    public bool NormalizeInboxSortOrders()
+    {
+        var changed = false;
+        var inbox = InboxTasks.ToArray();
+        for (var index = 0; index < inbox.Length; index += 1)
+        {
+            if (inbox[index].SortOrder == index)
+            {
+                continue;
+            }
+
+            inbox[index].SortOrder = index;
+            changed = true;
         }
 
         return changed;
@@ -568,10 +768,57 @@ internal sealed class StateStore
     private readonly string dataFile;
     private readonly string backupFile;
     private bool skipBackupOnce;
+    private long lastOwnWriteTicksUtc;
+    private string? lastSavedContent;
 
     public string DataDirectory => dataDirectory;
     public string DataFile => dataFile;
     public bool WritesBlocked { get; private set; }
+
+    public bool IsOwnWriteRecent(int windowMs = 1200)
+    {
+        var ticks = Interlocked.Read(ref lastOwnWriteTicksUtc);
+        if (ticks == 0)
+        {
+            return false;
+        }
+
+        return (DateTime.UtcNow.Ticks - ticks) < TimeSpan.FromMilliseconds(windowMs).Ticks;
+    }
+
+    public bool TryReadExternalUpdate(DateOnly today, out AppState? updatedState)
+    {
+        updatedState = null;
+        if (!File.Exists(dataFile))
+        {
+            return false;
+        }
+
+        try
+        {
+            var raw = File.ReadAllText(dataFile);
+            if (string.Equals(raw, lastSavedContent, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!TryReadState(dataFile, today, out var loaded, out _, out _))
+            {
+                return false;
+            }
+
+            loaded.Normalize(today);
+            loaded.ApplyDailyRollover(today);
+            loaded.PruneHistory(today);
+            lastSavedContent = raw;
+            updatedState = loaded;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            return false;
+        }
+    }
 
     private const string PointerFileName = "storage-location.txt";
 
@@ -686,6 +933,7 @@ internal sealed class StateStore
         var primaryExists = File.Exists(dataFile);
         if (TryReadState(dataFile, today, out var state, out var migratedLegacy, out _))
         {
+            TryRecordSavedContent(dataFile);
             if (migratedLegacy)
             {
                 var migrationBackup = TryPreserveLegacyFile();
@@ -756,6 +1004,7 @@ internal sealed class StateStore
         try
         {
             Directory.CreateDirectory(dataDirectory);
+            var serialized = JsonSerializer.Serialize(state, JsonOptions);
             using (var stream = new FileStream(
                 tempFile,
                 FileMode.Create,
@@ -763,11 +1012,14 @@ internal sealed class StateStore
                 FileShare.None,
                 4096,
                 FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false)))
             {
-                JsonSerializer.Serialize(stream, state, JsonOptions);
+                writer.Write(serialized);
+                writer.Flush();
                 stream.Flush(true);
             }
 
+            Interlocked.Exchange(ref lastOwnWriteTicksUtc, DateTime.UtcNow.Ticks);
             if (File.Exists(dataFile))
             {
                 File.Replace(tempFile, dataFile, skipBackupOnce ? null : backupFile, true);
@@ -777,6 +1029,8 @@ internal sealed class StateStore
                 File.Move(tempFile, dataFile);
             }
 
+            Interlocked.Exchange(ref lastOwnWriteTicksUtc, DateTime.UtcNow.Ticks);
+            lastSavedContent = serialized;
             skipBackupOnce = false;
             return true;
         }
@@ -785,6 +1039,20 @@ internal sealed class StateStore
             TryDeleteFile(tempFile);
             error = $"任务暂时无法保存：{ex.Message}";
             return false;
+        }
+    }
+
+    private void TryRecordSavedContent(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                lastSavedContent = File.ReadAllText(path);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
         }
     }
 

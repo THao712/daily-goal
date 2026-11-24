@@ -87,11 +87,12 @@ internal sealed class TaskDragGhost : Form
 		TextRenderer.DrawText(e.Graphics, task.Text, UiTheme.TaskFont, bounds, UiTheme.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
 		if (task.CarryCount > 0)
 		{
+			var carryText = task.CarryCount == 1 ? "昨日延续" : $"延续 {task.CarryCount} 天";
 			Rectangle rectangle = new Rectangle(bounds.Left, base.Height - UiTheme.S(30), UiTheme.S(92), UiTheme.S(22));
 			using GraphicsPath path4 = PaintHelpers.RoundRect(rectangle, UiTheme.Sf(6));
 			using SolidBrush brush4 = new SolidBrush(Color.FromArgb(28, color));
 			e.Graphics.FillPath(brush4, path4);
-			TextRenderer.DrawText(e.Graphics, "昨日延续", UiTheme.SmallFont, rectangle, color, TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
+			TextRenderer.DrawText(e.Graphics, carryText, UiTheme.SmallFont, rectangle, color, TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
 		}
 		using SolidBrush brush5 = new SolidBrush(UiTheme.TextFaint);
 		for (int i = 0; i < 2; i++)

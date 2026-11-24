@@ -272,6 +272,7 @@ internal static class UiTheme
     public static Font TaskFont { get; private set; } = null!;
     public static Font SmallFont { get; private set; } = null!;
     public static Font SmallBoldFont { get; private set; } = null!;
+    public static Font MicroBoldFont { get; private set; } = null!;
 
     private static void RebuildFonts()
     {
@@ -282,6 +283,7 @@ internal static class UiTheme
         TaskFont = MakeFont(22f, FontStyle.Regular);
         SmallFont = MakeFont(15f, FontStyle.Regular);
         SmallBoldFont = MakeFont(15f, FontStyle.Bold);
+        MicroBoldFont = MakeFont(12f, FontStyle.Bold);
     }
 
     private static Font MakeFont(float basePixelSize, FontStyle style)
@@ -431,7 +433,13 @@ internal enum IconKind
     Restore,
     Expand,
     Template,
-    Repeat
+    Repeat,
+    Pin,
+    Focus,
+    Star,
+    Search,
+    Review,
+    Export
 }
 
 internal static class IconPainter
@@ -512,6 +520,43 @@ internal static class IconPainter
             case IconKind.Repeat:
                 graphics.DrawArc(pen, centerX - 6 * scale, centerY - 5 * scale, 12 * scale, 10 * scale, 205, 235);
                 graphics.DrawLines(pen, [P(4, -5), P(7, -4), P(5.5f, -1)]);
+                break;
+            case IconKind.Pin:
+                graphics.DrawLine(pen, P(-3.2f, -6.5f), P(3.2f, -6.5f));
+                graphics.DrawLines(pen, [P(-2.2f, -6.5f), P(-2.2f, -1.5f), P(-5f, 1.5f), P(5f, 1.5f), P(2.2f, -1.5f), P(2.2f, -6.5f)]);
+                graphics.DrawLine(pen, P(0, 1.5f), P(0, 7f));
+                break;
+            case IconKind.Focus:
+                graphics.DrawEllipse(pen, centerX - 6.4f * scale, centerY - 5.2f * scale, 12.8f * scale, 12.8f * scale);
+                graphics.DrawLine(pen, P(-2.4f, -7.6f), P(2.4f, -7.6f));
+                graphics.DrawLine(pen, P(0, -1.6f), P(0, 1.8f));
+                graphics.DrawLine(pen, P(0, 1.8f), P(2.8f, 3.2f));
+                break;
+            case IconKind.Star:
+                using (var star = PaintHelpers.StarPath(centerX, centerY, 6.8f * scale, 3.1f * scale, 5))
+                {
+                    graphics.DrawPath(pen, star);
+                }
+                break;
+            case IconKind.Search:
+                graphics.DrawEllipse(pen, centerX - 6.2f * scale, centerY - 6.2f * scale, 9.6f * scale, 9.6f * scale);
+                graphics.DrawLine(pen, P(2.2f, 2.2f), P(6.5f, 6.5f));
+                break;
+            case IconKind.Review:
+                graphics.DrawEllipse(pen, centerX - 4.4f * scale, centerY - 4.4f * scale, 8.8f * scale, 8.8f * scale);
+                graphics.DrawLine(pen, P(0, -7.4f), P(0, -6.2f));
+                graphics.DrawLine(pen, P(0, 6.2f), P(0, 7.4f));
+                graphics.DrawLine(pen, P(-7.4f, 0), P(-6.2f, 0));
+                graphics.DrawLine(pen, P(6.2f, 0), P(7.4f, 0));
+                graphics.DrawLine(pen, P(-5.2f, -5.2f), P(-4.3f, -4.3f));
+                graphics.DrawLine(pen, P(4.3f, 4.3f), P(5.2f, 5.2f));
+                graphics.DrawLine(pen, P(-5.2f, 5.2f), P(-4.3f, 4.3f));
+                graphics.DrawLine(pen, P(4.3f, -4.3f), P(5.2f, -5.2f));
+                break;
+            case IconKind.Export:
+                graphics.DrawLines(pen, [P(-5.5f, 1.5f), P(-5.5f, 6f), P(5.5f, 6f), P(5.5f, 1.5f)]);
+                graphics.DrawLine(pen, P(0, 2.5f), P(0, -6.2f));
+                graphics.DrawLines(pen, [P(-3.4f, -3f), P(0, -6.4f), P(3.4f, -3f)]);
                 break;
         }
     }

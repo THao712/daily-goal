@@ -7,6 +7,14 @@ internal sealed partial class DailyGoalForm
 {
     private DateOnly SelectedDate => currentView == MainView.Tomorrow ? currentDate.AddDays(1) : currentDate;
 
+    private IEnumerable<TaskRecord> CurrentListTasks =>
+        currentView == MainView.Inbox ? state.InboxTasks : state.TasksForDate(SelectedDate);
+
+    private bool TaskBelongsToCurrentList(TaskRecord task) =>
+        currentView == MainView.Inbox
+            ? task.IsInbox
+            : currentView is MainView.Today or MainView.Tomorrow && !task.IsInbox && task.Day == SelectedDate;
+
     private IEnumerable<TaskRecord> CompletedTodayTasks => state.HistoryTasks.Where(task =>
         task.CompletedAt is not null
         && DateOnly.FromDateTime(task.CompletedAt.Value.LocalDateTime) == currentDate);
@@ -18,13 +26,14 @@ internal sealed partial class DailyGoalForm
 
     private void RenderScheduledTasks()
     {
+        var previousScroll = taskList.ScrollValue;
         CancelRowAnimationTimers();
         taskRows.Clear();
         taskList.SuspendLayout();
         DisposeChildren(taskList);
 
         var rowWidth = Math.Max(UiTheme.S(350), taskList.ClientSize.Width - taskList.Padding.Horizontal - UiTheme.S(18));
-        foreach (var task in state.TasksForDate(SelectedDate))
+        foreach (var task in CurrentListTasks)
         {
             var row = CreateTaskRow(task, rowWidth);
             taskRows[task.Id] = row;
@@ -34,12 +43,14 @@ internal sealed partial class DailyGoalForm
         taskList.ResumeLayout();
         taskList.ArrangeRows(true);
         RefreshCompletedSection();
+        taskList.ScrollValue = previousScroll;
         UpdateHeaderStats();
     }
 
-    /// <summary>重建今日列表底部的「已完成」分组（明日视图没有该分组）。</summary>
+    /// <summary>重建今日列表底部的「已完成」分组（明日与待办箱视图没有该分组）。</summary>
     private void RefreshCompletedSection()
     {
+        var previousScroll = taskList.ScrollValue;
         taskList.ClearFooters();
         if (currentView == MainView.Today)
         {
@@ -74,6 +85,7 @@ internal sealed partial class DailyGoalForm
             }
         }
 
+        taskList.ScrollValue = previousScroll;
         UpdateTodayEmptyState();
     }
 
@@ -84,15 +96,32 @@ internal sealed partial class DailyGoalForm
         RefreshCompletedSection();
     }
 
-    /// <summary>今日视图在“无待办且无完成”时才显示空状态插画；明日视图只看待办。</summary>
+    /// <summary>今日视图在“无待办且无完成”时才显示空状态插画；明日与待办箱只看待办。</summary>
     private void UpdateTodayEmptyState()
     {
+        if (currentView == MainView.Inbox)
+        {
+            todayEmpty.Title = "待办箱很清爽";
+            todayEmpty.Subtitle = "把暂时不急的想法先存到这里";
+        }
+        else if (currentView == MainView.Tomorrow)
+        {
+            todayEmpty.Title = "明天还没有安排";
+            todayEmpty.Subtitle = "提前写一两条，明早会更从容";
+        }
+        else
+        {
+            todayEmpty.Title = "今天很轻盈";
+            todayEmpty.Subtitle = "写下一件想完成的事";
+        }
+
         var showEmpty = taskRows.Count == 0
             && (currentView != MainView.Today || !CompletedTodayTasks.Any());
         taskList.Visible = !showEmpty;
         todayEmpty.Visible = showEmpty;
         if (showEmpty)
         {
+            todayEmpty.Invalidate();
             todayEmpty.BringToFront();
         }
     }
@@ -102,12 +131,16 @@ internal sealed partial class DailyGoalForm
         var row = new TaskRowControl(task)
         {
             Width = rowWidth,
-            Height = UiTheme.S(82),
+            Height = TaskRowControl.BaseHeight,
             Margin = new Padding(0, 0, 0, UiTheme.S(10)),
-            CompletionEnabled = task.Day == currentDate
+            CompletionEnabled = task.IsInbox || task.Day == currentDate
         };
         row.CompleteRequested += (_, _) => CompleteTask(task, row);
         row.MoreRequested += (_, _) => ShowTaskMenu(task, row);
+        row.ContextMenuRequested += (_, screenPoint) => ShowTaskMenu(task, row, screenPoint);
+        row.DeleteRequested += (_, _) => DeleteTaskWithRecurrence(task.Id);
+        row.SubTaskToggled += (_, subId) => ToggleSubTask(task.Id, subId);
+        row.DetailsEditRequested += (_, _) => EditTaskDetails(task);
         row.EditCommitted += (_, args) =>
         {
             EditTask(task.Id, args);
@@ -133,7 +166,7 @@ internal sealed partial class DailyGoalForm
 
     private void InsertScheduledTaskRow(TaskRecord task)
     {
-        if (task.Day != SelectedDate || currentView == MainView.History || taskRows.ContainsKey(task.Id))
+        if (!TaskBelongsToCurrentList(task) || taskRows.ContainsKey(task.Id))
         {
             return;
         }
@@ -141,7 +174,7 @@ internal sealed partial class DailyGoalForm
         var row = CreateTaskRow(task, rowWidth);
         taskRows[task.Id] = row;
         taskList.Controls.Add(row);
-        taskList.ApplyOrder(state.TasksForDate(SelectedDate).Select(candidate => candidate.Id), true);
+        taskList.ApplyOrder(CurrentListTasks.Select(candidate => candidate.Id), true);
         UpdateTodayEmptyState();
         row.Focus();
     }
@@ -153,18 +186,26 @@ internal sealed partial class DailyGoalForm
             taskList.Controls.Remove(row);
             row.Dispose();
         }
-        taskList.ApplyOrder(state.TasksForDate(SelectedDate).Select(candidate => candidate.Id), true);
+        taskList.ApplyOrder(CurrentListTasks.Select(candidate => candidate.Id), true);
         UpdateTodayEmptyState();
     }
 
     private void RenderHistory()
     {
+        historyDirty = false;
         historyList.SuspendLayout();
         DisposeChildren(historyList);
 
-        var history = state.HistoryTasks.ToArray();
+        var allHistory = state.HistoryTasks.ToArray();
+        var filteredHistory = string.IsNullOrWhiteSpace(historySearchQuery)
+            ? allHistory
+            : allHistory.Where(task =>
+                task.Text.Contains(historySearchQuery, StringComparison.OrdinalIgnoreCase)
+                || (task.Notes?.Contains(historySearchQuery, StringComparison.OrdinalIgnoreCase) ?? false))
+                .ToArray();
+
         var rowWidth = Math.Max(UiTheme.S(350), historyList.ClientSize.Width - historyList.Padding.Horizontal - UiTheme.S(18));
-        foreach (var group in history.GroupBy(task => DateOnly.FromDateTime(task.CompletedAt!.Value.LocalDateTime)))
+        foreach (var group in filteredHistory.GroupBy(task => DateOnly.FromDateTime(task.CompletedAt!.Value.LocalDateTime)))
         {
             var header = new HistoryDateHeader(FormatHistoryDate(group.Key))
             {
@@ -191,15 +232,18 @@ internal sealed partial class DailyGoalForm
 
         historyList.ResumeLayout();
         historyList.Relayout();
-        var empty = history.Length == 0;
+        var empty = filteredHistory.Length == 0;
         historyList.Visible = !empty;
+        historyEmpty.Title = !string.IsNullOrWhiteSpace(historySearchQuery) ? "没有匹配的记录" : "还没有完成记录";
+        historyEmpty.Subtitle = !string.IsNullOrWhiteSpace(historySearchQuery) ? "换个关键词或清空搜索框试试" : "完成一件事后，它会出现在这里";
         historyEmpty.Visible = empty;
         if (empty)
         {
+            historyEmpty.Invalidate();
             historyEmpty.BringToFront();
         }
 
-        var countsByDay = history
+        var countsByDay = allHistory
             .Where(task => task.CompletedAt is not null)
             .GroupBy(task => DateOnly.FromDateTime(task.CompletedAt!.Value.LocalDateTime))
             .ToDictionary(group => group.Key, group => group.Count());
@@ -210,6 +254,7 @@ internal sealed partial class DailyGoalForm
             counts[offset] = countsByDay.GetValueOrDefault(currentDate.AddDays(offset - 6), 0);
         }
 
+        historySummary.ReferenceDate = currentDate;
         historySummary.DailyCounts = counts;
         historySummary.StreakDays = ComputeStreak(countsByDay);
         historySummary.HeatCells = BuildHeatCells(countsByDay);
@@ -293,18 +338,55 @@ internal sealed partial class DailyGoalForm
         return date.ToDateTime(TimeOnly.MinValue).ToString("M 月 d 日  dddd", new CultureInfo("zh-CN"));
     }
 
-    private void AddTask()
+    private void AddTask(bool shiftAlternateDay = false)
     {
-        var text = taskInput.Text.Trim();
-        if (string.IsNullOrWhiteSpace(text))
+        var raw = taskInput.Text.Trim();
+        if (string.IsNullOrWhiteSpace(raw))
         {
             taskInput.Clear();
             return;
         }
-        if (AddTaskToDate(text, SelectedDate))
+
+        var parsed = QuickCaptureParser.Parse(raw);
+        var target = parsed.Target;
+        if (shiftAlternateDay && target == CaptureTarget.CurrentView)
         {
-            taskInput.Clear();
-            taskInput.Focus();
+            target = currentView == MainView.Tomorrow ? CaptureTarget.Today : CaptureTarget.Tomorrow;
+        }
+
+        var isInbox = target == CaptureTarget.Inbox || (target == CaptureTarget.CurrentView && currentView == MainView.Inbox);
+        var date = target switch
+        {
+            CaptureTarget.Today => currentDate,
+            CaptureTarget.Tomorrow => currentDate.AddDays(1),
+            CaptureTarget.Inbox => currentDate,
+            _ => SelectedDate
+        };
+
+        var created = AddTaskRecord(parsed.Text, date, isInbox, parsed.AccentIndex, parsed.IsPinned);
+        if (created is null)
+        {
+            return;
+        }
+
+        if (parsed.Recurrence is { } rule && !created.IsInbox)
+        {
+            SetRecurrence(created, rule, quiet: true);
+        }
+
+        taskInput.Clear();
+        taskInput.Focus();
+
+        if (!TaskBelongsToCurrentList(created))
+        {
+            var destination = created.IsInbox
+                ? "待办箱"
+                : created.Day == currentDate ? "今日计划" : "明日计划";
+            ShowTransientStatus($"已添加到{destination}：{created.Text}");
+        }
+        else if (parsed.Recurrence is not null)
+        {
+            ShowTransientStatus($"已添加并设为{(parsed.Recurrence == RecurrenceRule.Daily ? "每日" : "工作日")}重复");
         }
     }
 
@@ -354,10 +436,11 @@ internal sealed partial class DailyGoalForm
     internal int AddTasksFromLines(IReadOnlyList<string> lines)
     {
         var added = 0;
+        var isInbox = currentView == MainView.Inbox;
         foreach (var line in lines.Reverse())
         {
             var text = line.Length > 160 ? line[..160] : line;
-            if (AddTaskToDate(text, SelectedDate))
+            if (AddTaskRecord(text, SelectedDate, isInbox) is not null)
             {
                 added += 1;
             }
@@ -368,16 +451,28 @@ internal sealed partial class DailyGoalForm
 
     private void CompleteTask(TaskRecord task, TaskRowControl row)
     {
-        if (!task.IsActive || task.Day != currentDate || row.CompletedVisual)
+        if (!task.IsActive || (!task.IsInbox && task.Day != currentDate) || row.CompletedVisual)
         {
             return;
+        }
+
+        if (focusedTaskId == task.Id)
+        {
+            StopFocus(recordElapsed: true, silent: true);
         }
 
         var snapshot = state.Clone();
         var previousSortOrder = task.SortOrder;
         var completedAt = clock.Now;
         task.CompletedAt = completedAt;
-        state.NormalizeSortOrders(currentDate);
+        if (task.IsInbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(currentDate);
+        }
         state.PruneHistory(currentDate);
         if (!SaveState())
         {
@@ -385,6 +480,8 @@ internal sealed partial class DailyGoalForm
             RenderScheduledTasks();
             return;
         }
+
+        var allDoneNow = !task.IsInbox && !state.TasksForDate(currentDate).Any();
 
         row.CompletedVisual = true;
         row.Pulse = state.Settings.ReducedMotion ? 0f : 1f;
@@ -394,12 +491,25 @@ internal sealed partial class DailyGoalForm
         {
             StartRowPulse(row);
             LaunchParticles(row, task);
+            if (allDoneNow)
+            {
+                LaunchAllDoneCelebration();
+            }
         }
 
-        ShowUndo(new UndoCompletion(task.Id, previousSortOrder, completedAt), $"已完成“{task.Text}”");
+        PlayCompletionFeedback(allDoneNow);
+        var undoText = allDoneNow
+            ? $"今日全部完成 ✨ 已完成“{task.Text}”"
+            : $"已完成“{task.Text}”";
+        ShowUndo(new UndoCompletion(task.Id, previousSortOrder, completedAt), undoText);
         UpdateHeaderStats();
-        RenderHistory();
+        MarkHistoryDirty();
         ScheduleCompletedRowRemoval(task.Id, row);
+    }
+
+    private void PlayCompletionFeedback(bool allDone = false)
+    {
+        PlayFeedbackSound(allDone ? FeedbackSoundKind.AllDone : FeedbackSoundKind.TaskComplete);
     }
 
     private void StartRowPulse(TaskRowControl row)
@@ -487,16 +597,21 @@ internal sealed partial class DailyGoalForm
     private void ShowUndo(UndoEntry entry, string message)
     {
         undoEntry = entry;
+        undoShownAt = DateTime.Now;
         undoBar.Message = message;
+        undoBar.RemainingRatio = 1f;
         undoBar.Visible = true;
         undoBar.BringToFront();
         undoTimer.Stop();
         undoTimer.Start();
+        undoCountdownTimer.Stop();
+        undoCountdownTimer.Start();
     }
 
     private void HideUndoBar()
     {
         undoTimer.Stop();
+        undoCountdownTimer.Stop();
         undoEntry = null;
         undoBar.Visible = false;
     }
@@ -534,15 +649,28 @@ internal sealed partial class DailyGoalForm
         }
 
         var snapshot = state.Clone();
-        foreach (var active in state.TasksForDate(currentDate).Where(candidate => candidate.SortOrder >= entry.PreviousSortOrder))
+        if (task.IsInbox)
         {
-            active.SortOrder += 1;
+            foreach (var active in state.InboxTasks.Where(candidate => candidate.SortOrder >= entry.PreviousSortOrder))
+            {
+                active.SortOrder += 1;
+            }
+            task.CompletedAt = null;
+            task.SortOrder = entry.PreviousSortOrder;
+            state.NormalizeInboxSortOrders();
         }
+        else
+        {
+            foreach (var active in state.TasksForDate(currentDate).Where(candidate => candidate.SortOrder >= entry.PreviousSortOrder))
+            {
+                active.SortOrder += 1;
+            }
 
-        task.CompletedAt = null;
-        task.Day = currentDate;
-        task.SortOrder = entry.PreviousSortOrder;
-        state.NormalizeSortOrders(currentDate);
+            task.CompletedAt = null;
+            task.Day = currentDate;
+            task.SortOrder = entry.PreviousSortOrder;
+            state.NormalizeSortOrders(currentDate);
+        }
         if (!SaveState())
         {
             state = snapshot;
@@ -552,7 +680,7 @@ internal sealed partial class DailyGoalForm
         CancelCompletedRowRemoval(task.Id);
         HideUndoBar();
         RenderToday();
-        RenderHistory();
+        MarkHistoryDirty();
         UpdateHeaderStats();
         if (taskRows.TryGetValue(task.Id, out var row))
         {
@@ -572,7 +700,8 @@ internal sealed partial class DailyGoalForm
         var restored = entry.Snapshot.Clone();
         if (restored.IsActive)
         {
-            foreach (var active in state.TasksForDate(restored.Day).Where(candidate => candidate.SortOrder >= restored.SortOrder))
+            var list = restored.IsInbox ? state.InboxTasks : state.TasksForDate(restored.Day);
+            foreach (var active in list.Where(candidate => candidate.SortOrder >= restored.SortOrder))
             {
                 active.SortOrder += 1;
             }
@@ -588,7 +717,14 @@ internal sealed partial class DailyGoalForm
             }
         }
 
-        state.NormalizeSortOrders(restored.Day);
+        if (restored.IsInbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(restored.Day);
+        }
         if (!SaveState())
         {
             state = snapshot;
@@ -597,7 +733,7 @@ internal sealed partial class DailyGoalForm
 
         HideUndoBar();
         RenderScheduledTasks();
-        RenderHistory();
+        MarkHistoryDirty();
         UpdateHeaderStats();
     }
 
@@ -616,6 +752,7 @@ internal sealed partial class DailyGoalForm
         }
 
         task.CompletedAt = null;
+        task.IsInbox = false;
         task.Day = currentDate;
         task.SortOrder = 0;
         task.RecurrenceId = null;
@@ -632,7 +769,7 @@ internal sealed partial class DailyGoalForm
         }
 
         RenderToday();
-        RenderHistory();
+        MarkHistoryDirty();
         UpdateHeaderStats();
     }
 
@@ -655,7 +792,7 @@ internal sealed partial class DailyGoalForm
 
         ShowUndo(new UndoDeletion(deleted, null), $"已删除“{deleted.Text}”");
         RefreshCompletedSection();
-        RenderHistory();
+        MarkHistoryDirty();
         UpdateHeaderStats();
     }
 
@@ -668,10 +805,22 @@ internal sealed partial class DailyGoalForm
             return;
         }
 
+        if (focusedTaskId == task.Id)
+        {
+            StopFocus(recordElapsed: false, silent: true);
+        }
+
         var deleted = task.Clone();
         state.Tasks.Remove(task);
 
-        state.NormalizeSortOrders(task.Day);
+        if (task.IsInbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(task.Day);
+        }
         if (!SaveState())
         {
             state = snapshot;
@@ -715,7 +864,7 @@ internal sealed partial class DailyGoalForm
 
     private void MoveTask(string taskId, int direction)
     {
-        var active = state.TasksForDate(SelectedDate).ToList();
+        var active = CurrentListTasks.ToList();
         var index = active.FindIndex(task => task.Id == taskId);
         var targetIndex = index + Math.Sign(direction);
         if (index < 0 || targetIndex < 0 || targetIndex >= active.Count)
@@ -725,13 +874,20 @@ internal sealed partial class DailyGoalForm
 
         var snapshot = state.Clone();
         (active[index].SortOrder, active[targetIndex].SortOrder) = (active[targetIndex].SortOrder, active[index].SortOrder);
-        state.NormalizeSortOrders(SelectedDate);
+        if (currentView == MainView.Inbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(SelectedDate);
+        }
         if (!SaveState())
         {
             state = snapshot;
         }
 
-        taskList.ApplyOrder(state.TasksForDate(SelectedDate).Select(task => task.Id), true);
+        taskList.ApplyOrder(CurrentListTasks.Select(task => task.Id), true);
         if (taskRows.TryGetValue(taskId, out var row))
         {
             row.Focus();
@@ -815,7 +971,7 @@ internal sealed partial class DailyGoalForm
 
     private bool ApplyTaskOrder(string[] order)
     {
-        var activeIds = state.TasksForDate(SelectedDate).Select(task => task.Id).ToHashSet(StringComparer.Ordinal);
+        var activeIds = CurrentListTasks.Select(task => task.Id).ToHashSet(StringComparer.Ordinal);
         if (order.Length != activeIds.Count || order.Any(id => !activeIds.Contains(id)))
         {
             return false;
@@ -828,7 +984,14 @@ internal sealed partial class DailyGoalForm
             task.SortOrder = index;
         }
 
-        state.NormalizeSortOrders(SelectedDate);
+        if (currentView == MainView.Inbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(SelectedDate);
+        }
         if (SaveState())
         {
             return true;
@@ -840,23 +1003,35 @@ internal sealed partial class DailyGoalForm
 
     private void ClearTodayTasks()
     {
-        var selectedDate = SelectedDate;
-        if (!state.TasksForDate(selectedDate).Any())
+        if (!CurrentListTasks.Any())
         {
             return;
         }
 
-        var confirmed = ConfirmAction(
-            currentView == MainView.Tomorrow ? "清空明日计划" : "清空今日任务",
-            currentView == MainView.Tomorrow ? "确定清空明天所有计划任务吗？" : "确定清空今天所有未完成任务吗？",
-            "清空");
-        if (!confirmed)
+        var title = currentView switch
+        {
+            MainView.Tomorrow => "清空明日计划",
+            MainView.Inbox => "清空待办箱",
+            _ => "清空今日任务"
+        };
+        var body = currentView switch
+        {
+            MainView.Tomorrow => "确定清空明天所有计划任务吗？",
+            MainView.Inbox => "确定清空待办箱里的所有任务吗？",
+            _ => "确定清空今天所有未完成任务吗？"
+        };
+        if (!ConfirmAction(title, body, "清空"))
         {
             return;
         }
 
         var snapshot = state.Clone();
-        state.Tasks.RemoveAll(task => task.IsActive && task.Day == selectedDate);
+        var idsToRemove = CurrentListTasks.Select(task => task.Id).ToHashSet(StringComparer.Ordinal);
+        if (focusedTaskId is not null && idsToRemove.Contains(focusedTaskId))
+        {
+            StopFocus(recordElapsed: false, silent: true);
+        }
+        state.Tasks.RemoveAll(task => idsToRemove.Contains(task.Id));
         if (!SaveState())
         {
             state = snapshot;
@@ -873,7 +1048,7 @@ internal sealed partial class DailyGoalForm
             return;
         }
 
-        if (!ConfirmAction("清空完成记录", "确定清空最近 30 天的完成记录吗？", "清空"))
+        if (!ConfirmAction("清空完成记录", "确定清空所有已保存的完成记录吗？", "清空"))
         {
             return;
         }
@@ -888,7 +1063,7 @@ internal sealed partial class DailyGoalForm
 
         HideUndoBar();
         RefreshCompletedSection();
-        RenderHistory();
+        MarkHistoryDirty();
         UpdateHeaderStats();
     }
 

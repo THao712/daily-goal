@@ -27,11 +27,15 @@ internal sealed partial class DailyGoalForm
     private bool InteractionLocked => settingsVisible
         || templateView.Visible
         || recurringView.Visible
+        || reviewView.Visible
+        || temporarilyPinned
         || dragInProgress
         || windowDragging
         || moreMenu.Visible
         || taskMenu.Visible
         || templateMenu.Visible
+        || reportMenu.Visible
+        || (hotkeyHoldActive && (ContainsFocus || taskInput.ContainsFocus))
         || (taskInput.ContainsFocus && taskInput.TextLength > 0)
         || taskRows.Values.Any(row => row.Editing);
 
@@ -382,6 +386,60 @@ internal sealed partial class DailyGoalForm
                 Spin = -8 + random.NextDouble() * 16,
                 Accent = accent,
                 HasTrail = accent || random.NextDouble() > 0.42
+            });
+        }
+
+        if (!particleTimer.Enabled)
+        {
+            particleClock.Restart();
+            lastParticleElapsedMs = 0;
+        }
+
+        particleLayer.ShowFor(this);
+        StartParticleTimer();
+    }
+
+    /// <summary>完成当天最后一项任务时，在进度环和窗体上中部触发一轮柔和的星光庆祝。</summary>
+    private void LaunchAllDoneCelebration()
+    {
+        if (state.Settings.ReducedMotion)
+        {
+            return;
+        }
+
+        var origin = new Point(progressRing.Left + progressRing.Width / 2, progressRing.Top + progressRing.Height / 2);
+        var count = state.Settings.ParticleIntensity switch
+        {
+            ParticleIntensity.Light => 26,
+            ParticleIntensity.Standard => 42,
+            _ => 56
+        };
+        var overflow = particles.Count + count - MaxActiveParticles;
+        if (overflow > 0)
+        {
+            particles.RemoveRange(0, Math.Min(overflow, particles.Count));
+        }
+
+        Color[] palette = [UiTheme.Mint, UiTheme.Sun, UiTheme.Sky, UiTheme.Coral, Color.White];
+        for (var index = 0; index < count; index += 1)
+        {
+            var angle = Math.PI * 2 * index / count + (random.NextDouble() - 0.5) * 0.45;
+            var speed = 3.2 + random.NextDouble() * 6.8;
+            var star = index % 3 == 0;
+            particles.Add(new Particle
+            {
+                Color = palette[index % palette.Length],
+                Shape = star ? ParticleShape.Star : (index % 2 == 0 ? ParticleShape.Spark : ParticleShape.Ring),
+                Size = star ? 1.05f + (float)random.NextDouble() * 0.45f : 0.72f + (float)random.NextDouble() * 0.35f,
+                X = origin.X + random.Next(-8, 9),
+                Y = origin.Y + random.Next(-8, 9),
+                Vx = Math.Cos(angle) * speed,
+                Vy = Math.Sin(angle) * speed - 1.8,
+                Life = 850 + random.Next(0, 320),
+                Rotation = random.NextDouble() * 360,
+                Spin = -10 + random.NextDouble() * 20,
+                Accent = star,
+                HasTrail = true
             });
         }
 

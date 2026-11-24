@@ -12,14 +12,25 @@ internal sealed partial class DailyGoalForm
 {
     private bool AddTaskToDate(string text, DateOnly date, int? accentIndex = null)
     {
+        return AddTaskRecord(text, date, isInbox: false, accentIndex: accentIndex, isPinned: false) is not null;
+    }
+
+    internal TaskRecord? AddTaskRecord(
+        string text,
+        DateOnly date,
+        bool isInbox = false,
+        int? accentIndex = null,
+        bool isPinned = false)
+    {
         text = text.Trim();
         if (string.IsNullOrWhiteSpace(text))
         {
-            return false;
+            return null;
         }
 
         var snapshot = state.Clone();
-        foreach (var active in state.TasksForDate(date))
+        var existing = isInbox ? state.InboxTasks : state.TasksForDate(date);
+        foreach (var active in existing)
         {
             active.SortOrder += 1;
         }
@@ -30,25 +41,88 @@ internal sealed partial class DailyGoalForm
             Text = text,
             CreatedAt = clock.Now,
             Day = date,
+            IsInbox = isInbox,
+            IsPinned = isPinned,
             SortOrder = 0
         };
         task.AccentIndex = accentIndex ?? TaskRecord.AccentForId(task.Id);
         state.Tasks.Add(task);
-        state.NormalizeSortOrders(date);
+        if (isInbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(date);
+        }
+
         if (!SaveState())
         {
             state = snapshot;
-            return false;
+            return null;
         }
 
         InsertScheduledTaskRow(task);
         UpdateHeaderStats();
-        return true;
+        return task;
     }
 
-    private void ShowTaskMenu(TaskRecord task, TaskRowControl row)
+    private void ShowTaskMenu(TaskRecord task, TaskRowControl row, Point? screenPoint = null)
     {
         taskMenu.Items.Clear();
+
+        var focusItem = new ToolStripMenuItem("开始专注");
+        var defaultMinutes = state.Settings.DefaultFocusMinutes;
+        var defaultFocus = new ToolStripMenuItem($"默认（{defaultMinutes} 分钟）");
+        defaultFocus.Click += (_, _) => StartFocus(task, defaultMinutes);
+        focusItem.DropDownItems.Add(defaultFocus);
+        focusItem.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var preset in AppSettings.FocusMinuteChoices)
+        {
+            var minutes = preset;
+            var presetItem = new ToolStripMenuItem($"{minutes} 分钟");
+            presetItem.Click += (_, _) => StartFocus(task, minutes);
+            focusItem.DropDownItems.Add(presetItem);
+        }
+        var countUpItem = new ToolStripMenuItem("自由正计时");
+        countUpItem.Click += (_, _) => StartFocus(task, 0);
+        focusItem.DropDownItems.Add(countUpItem);
+        taskMenu.Items.Add(focusItem);
+
+        var pinItem = new ToolStripMenuItem(task.IsPinned ? "取消重点星标" : "设为重点 ★");
+        pinItem.Click += (_, _) => ToggleTaskPin(task.Id);
+        taskMenu.Items.Add(pinItem);
+
+        var detailsItem = new ToolStripMenuItem(row.HasDetails ? "编辑备注与子步骤…" : "添加备注与子步骤…");
+        detailsItem.Click += (_, _) => EditTaskDetails(task);
+        taskMenu.Items.Add(detailsItem);
+
+        taskMenu.Items.Add(new ToolStripSeparator());
+
+        if (task.IsInbox)
+        {
+            var toToday = new ToolStripMenuItem("排入今日");
+            toToday.Click += (_, _) => MoveTaskToDay(task.Id, currentDate);
+            var toTomorrow = new ToolStripMenuItem("排入明日");
+            toTomorrow.Click += (_, _) => MoveTaskToDay(task.Id, currentDate.AddDays(1));
+            taskMenu.Items.Add(toToday);
+            taskMenu.Items.Add(toTomorrow);
+        }
+        else
+        {
+            var isToday = task.Day == currentDate;
+            var shiftDay = new ToolStripMenuItem(isToday ? "推迟到明天" : "移到今天");
+            var destinationDay = isToday ? currentDate.AddDays(1) : currentDate;
+            shiftDay.Click += (_, _) => MoveTaskToDay(task.Id, destinationDay);
+            taskMenu.Items.Add(shiftDay);
+
+            var toInbox = new ToolStripMenuItem("移入待办箱");
+            toInbox.Click += (_, _) => MoveTaskToInbox(task.Id);
+            taskMenu.Items.Add(toInbox);
+        }
+
+        taskMenu.Items.Add(new ToolStripSeparator());
+
         var edit = new ToolStripMenuItem("编辑任务");
         edit.Click += (_, _) => row.BeginEdit();
         taskMenu.Items.Add(edit);
@@ -71,19 +145,22 @@ internal sealed partial class DailyGoalForm
         var recurring = task.RecurrenceId is null
             ? null
             : state.RecurringTasks.FirstOrDefault(candidate => candidate.Id == task.RecurrenceId);
-        if (recurring is null)
+        if (!task.IsInbox)
         {
-            var repeat = new ToolStripMenuItem("设为重复");
-            AddRecurrenceItem(repeat, "每日", RecurrenceRule.Daily, task);
-            AddRecurrenceItem(repeat, "工作日", RecurrenceRule.Weekdays, task);
-            AddRecurrenceItem(repeat, $"每周{FormatWeekday(task.Day.DayOfWeek)}", RecurrenceRule.Weekly, task);
-            taskMenu.Items.Add(repeat);
-        }
-        else
-        {
-            var manage = new ToolStripMenuItem($"重复：{FormatRecurrence(recurring)}（管理…）");
-            manage.Click += (_, _) => ShowRecurringManager(recurring.Id);
-            taskMenu.Items.Add(manage);
+            if (recurring is null)
+            {
+                var repeat = new ToolStripMenuItem("设为重复");
+                AddRecurrenceItem(repeat, "每日", RecurrenceRule.Daily, task);
+                AddRecurrenceItem(repeat, "工作日", RecurrenceRule.Weekdays, task);
+                AddRecurrenceItem(repeat, $"每周{FormatWeekday(task.Day.DayOfWeek)}", RecurrenceRule.Weekly, task);
+                taskMenu.Items.Add(repeat);
+            }
+            else
+            {
+                var manage = new ToolStripMenuItem($"重复：{FormatRecurrence(recurring)}（管理…）");
+                manage.Click += (_, _) => ShowRecurringManager(recurring.Id);
+                taskMenu.Items.Add(manage);
+            }
         }
 
         var saveTemplate = new ToolStripMenuItem("保存为常用模板");
@@ -95,7 +172,200 @@ internal sealed partial class DailyGoalForm
         taskMenu.Items.Add(delete);
         taskMenu.Font = UiTheme.BodyFont;
         UiTheme.StyleMenu(taskMenu);
-        taskMenu.Show(row, new Point(Math.Max(8, row.Width - UiTheme.S(190)), row.Height - UiTheme.S(12)));
+        if (screenPoint.HasValue)
+        {
+            taskMenu.Show(screenPoint.Value);
+        }
+        else
+        {
+            taskMenu.Show(row, new Point(Math.Max(8, row.Width - UiTheme.S(190)), row.Height - UiTheme.S(12)));
+        }
+    }
+
+    internal bool MoveTaskToDay(string taskId, DateOnly targetDay, bool silentToast = false)
+    {
+        var task = state.Tasks.FirstOrDefault(candidate => candidate.Id == taskId && candidate.IsActive);
+        if (task is null)
+        {
+            return false;
+        }
+
+        if (!task.IsInbox && task.Day == targetDay)
+        {
+            return false;
+        }
+
+        var snapshot = state.Clone();
+        var previousDay = task.Day;
+        var wasInbox = task.IsInbox;
+        foreach (var existing in state.TasksForDate(targetDay))
+        {
+            existing.SortOrder += 1;
+        }
+
+        task.IsInbox = false;
+        task.Day = targetDay;
+        task.CarryCount = 0;
+        task.SortOrder = 0;
+        if (wasInbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(previousDay);
+        }
+        state.NormalizeSortOrders(targetDay);
+
+        if (!SaveState())
+        {
+            state = snapshot;
+            return false;
+        }
+
+        RenderScheduledTasks();
+        UpdateHeaderStats();
+        if (!silentToast)
+        {
+            var label = targetDay == currentDate ? "今日计划" : "明日计划";
+            ShowTransientStatus($"已移至{label}");
+        }
+        return true;
+    }
+
+    internal bool MoveTaskToInbox(string taskId, bool silentToast = false)
+    {
+        var task = state.Tasks.FirstOrDefault(candidate => candidate.Id == taskId && candidate.IsActive);
+        if (task is null || task.IsInbox)
+        {
+            return false;
+        }
+
+        var snapshot = state.Clone();
+        var previousDay = task.Day;
+        foreach (var existing in state.InboxTasks)
+        {
+            existing.SortOrder += 1;
+        }
+
+        task.IsInbox = true;
+        task.CarryCount = 0;
+        task.RecurrenceId = null;
+        task.SortOrder = 0;
+        state.NormalizeSortOrders(previousDay);
+        state.NormalizeInboxSortOrders();
+
+        if (!SaveState())
+        {
+            state = snapshot;
+            return false;
+        }
+
+        RenderScheduledTasks();
+        UpdateHeaderStats();
+        if (!silentToast)
+        {
+            ShowTransientStatus("已移入待办箱");
+        }
+        return true;
+    }
+
+    internal bool ToggleTaskPin(string taskId)
+    {
+        var task = state.Tasks.FirstOrDefault(candidate => candidate.Id == taskId && candidate.IsActive);
+        if (task is null)
+        {
+            return false;
+        }
+
+        var snapshot = state.Clone();
+        task.IsPinned = !task.IsPinned;
+        if (task.IsInbox)
+        {
+            state.NormalizeInboxSortOrders();
+        }
+        else
+        {
+            state.NormalizeSortOrders(task.Day);
+        }
+
+        if (!SaveState())
+        {
+            state = snapshot;
+            return false;
+        }
+
+        RenderScheduledTasks();
+        ShowTransientStatus(task.IsPinned ? "已设为重点任务 ★" : "已取消重点星标");
+        return true;
+    }
+
+    internal bool ToggleSubTask(string taskId, string subTaskId)
+    {
+        var task = state.Tasks.FirstOrDefault(candidate => candidate.Id == taskId && candidate.IsActive);
+        var sub = task?.SubTasks?.FirstOrDefault(item => item.Id == subTaskId);
+        if (task is null || sub is null)
+        {
+            return false;
+        }
+
+        var snapshot = state.Clone();
+        sub.Completed = !sub.Completed;
+        if (!SaveState())
+        {
+            state = snapshot;
+            return false;
+        }
+
+        if (taskRows.TryGetValue(task.Id, out var row) && !row.IsDisposed)
+        {
+            row.Invalidate();
+        }
+        return true;
+    }
+
+    private void EditTaskDetails(TaskRecord task)
+    {
+        if (suppressDialogs)
+        {
+            return;
+        }
+
+        if (TaskDetailsDialog.TryEdit(this, task, out var notes, out var subTasks))
+        {
+            if (UpdateTaskDetails(task.Id, notes, subTasks) && taskRows.TryGetValue(task.Id, out var row) && !row.IsDisposed)
+            {
+                row.DetailsExpanded = row.HasDetails;
+                row.RefreshDetailsLayout();
+            }
+        }
+    }
+
+    internal bool UpdateTaskDetails(string taskId, string? notes, List<SubTaskItem>? subTasks)
+    {
+        var task = state.Tasks.FirstOrDefault(candidate => candidate.Id == taskId && candidate.IsActive);
+        if (task is null)
+        {
+            return false;
+        }
+
+        var snapshot = state.Clone();
+        task.Notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+        task.SubTasks = subTasks is { Count: > 0 }
+            ? subTasks.Select(sub => sub.Clone()).ToList()
+            : null;
+        state.Normalize(currentDate);
+        if (!SaveState())
+        {
+            state = snapshot;
+            return false;
+        }
+
+        if (taskRows.TryGetValue(task.Id, out var row) && !row.IsDisposed)
+        {
+            row.RefreshDetailsLayout();
+        }
+        return true;
     }
 
     private void SetTaskAccent(TaskRecord task, int accentIndex)
@@ -144,9 +414,9 @@ internal sealed partial class DailyGoalForm
         parent.DropDownItems.Add(item);
     }
 
-    private void SetRecurrence(TaskRecord task, RecurrenceRule rule)
+    private void SetRecurrence(TaskRecord task, RecurrenceRule rule, bool quiet = false)
     {
-        if (!task.IsActive || task.RecurrenceId is not null)
+        if (!task.IsActive || task.IsInbox || task.RecurrenceId is not null)
         {
             return;
         }
@@ -172,7 +442,10 @@ internal sealed partial class DailyGoalForm
             return;
         }
 
-        ShowTransientStatus($"已设为{FormatRecurrence(recurring)}重复");
+        if (!quiet)
+        {
+            ShowTransientStatus($"已设为{FormatRecurrence(recurring)}重复");
+        }
         RenderScheduledTasks();
     }
 
@@ -274,7 +547,7 @@ internal sealed partial class DailyGoalForm
         foreach (var template in state.Templates.OrderBy(template => template.SortOrder))
         {
             var item = new ToolStripMenuItem(template.Text);
-            item.Click += (_, _) => AddTaskToDate(template.Text, SelectedDate, template.AccentIndex);
+            item.Click += (_, _) => AddTaskRecord(template.Text, SelectedDate, isInbox: currentView == MainView.Inbox, accentIndex: template.AccentIndex);
             templateMenu.Items.Add(item);
         }
         if (templateMenu.Items.Count == 0)
@@ -303,9 +576,9 @@ internal sealed partial class DailyGoalForm
         templateView.Controls.Add(templateBackButton);
         var title = CreateLabel("常用模板", new Point(UiTheme.S(76), UiTheme.S(22)), new Size(UiTheme.S(300), UiTheme.S(40)), UiTheme.TitleFont, UiTheme.Text);
         templateView.Controls.Add(title);
-        ConfigureIconButton(templateCloseButton, IconKind.Close, "关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
+        ConfigureIconButton(templateCloseButton, IconKind.Close, "收起/关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
         templateCloseButton.Tone = IconButtonTone.Danger;
-        templateCloseButton.Click += (_, _) => Close();
+        templateCloseButton.Click += (_, _) => HandleCloseButtonClick();
         templateView.Controls.Add(templateCloseButton);
 
         var hint = CreateLabel("拖动模板调整顺序，双击或在下方修改名称", new Point(UiTheme.S(34), UiTheme.S(78)), new Size(UiTheme.S(520), UiTheme.S(28)), UiTheme.SmallFont, UiTheme.TextMuted);
@@ -371,6 +644,10 @@ internal sealed partial class DailyGoalForm
         if (recurringView.Visible)
         {
             HideRecurringManager();
+        }
+        if (reviewView.Visible)
+        {
+            HideDailyReview();
         }
         RefreshTemplateList();
         SetMainChromeVisible(false);
@@ -535,9 +812,9 @@ internal sealed partial class DailyGoalForm
         recurringView.Controls.Add(recurringBackButton);
         var title = CreateLabel("重复任务", new Point(UiTheme.S(76), UiTheme.S(22)), new Size(UiTheme.S(300), UiTheme.S(40)), UiTheme.TitleFont, UiTheme.Text);
         recurringView.Controls.Add(title);
-        ConfigureIconButton(recurringCloseButton, IconKind.Close, "关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
+        ConfigureIconButton(recurringCloseButton, IconKind.Close, "收起/关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
         recurringCloseButton.Tone = IconButtonTone.Danger;
-        recurringCloseButton.Click += (_, _) => Close();
+        recurringCloseButton.Click += (_, _) => HandleCloseButtonClick();
         recurringView.Controls.Add(recurringCloseButton);
 
         var hint = CreateLabel("选中一个系列后可修改规则、暂停或删除（对之后的日期生效）", new Point(UiTheme.S(34), UiTheme.S(78)), new Size(ExpandedWidth - UiTheme.S(68), UiTheme.S(28)), UiTheme.SmallFont, UiTheme.TextMuted);
@@ -604,6 +881,10 @@ internal sealed partial class DailyGoalForm
         if (templateView.Visible)
         {
             HideTemplateManager();
+        }
+        if (reviewView.Visible)
+        {
+            HideDailyReview();
         }
         RefreshRecurringList(selectId);
         SetMainChromeVisible(false);

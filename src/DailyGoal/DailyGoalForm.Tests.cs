@@ -333,6 +333,7 @@ internal sealed partial class DailyGoalForm
         var planningInteractions = RunPlanningInteractionSelfTest();
         var startupRegistration = RunStartupRegistrationSelfTest();
         var reminderValid = RunReminderSelfTest();
+        var enhancements = RunEnhancementsSelfTest();
 
         if (!fullscreenGeometryValid || !adaptiveScaleValid || !hiddenAtStart || !hiddenFromTaskbar || !added || !rowsDisposed || !edited || !reordered || !dragReordered || !motionCompleted || !completed || !undone
             || !restored || !historyDeleted || !deleteUndoValid || !completedSectionValid || !batchAddValid || !accentPersisted
@@ -361,7 +362,198 @@ internal sealed partial class DailyGoalForm
 
         return $"fullscreenGeometry={fullscreenGeometryValid}; adaptiveScale={adaptiveScaleValid}; slideStable={slideAnimationStable}/{slideResizeCount}; transientUnlock={transientUiDoesNotLock}; windowDrag={windowDrag}; active={state.ActiveTasks.Count()}; taskbarHidden={hiddenFromTaskbar}; disposed={rowsDisposed}; edited={edited}; reordered={reordered}; drag={dragReordered}; motion={motionCompleted}; "
             + $"undo={undone}; restored={restored}; historyDeleted={historyDeleted}; deleteUndo={deleteUndoValid}; completedSection={completedSectionValid}; batchAdd={batchAddValid}; "
-            + $"accent={accentPersisted}; reminder={reminderValid}; themeSwitched={themeSwitched}; rollover={rolloverIdempotent}; migration={legacyMigrated}; recovery={backupRecovered}; {reliability}; {planning}";
+            + $"accent={accentPersisted}; reminder={reminderValid}; themeSwitched={themeSwitched}; rollover={rolloverIdempotent}; migration={legacyMigrated}; recovery={backupRecovered}; {reliability}; {planning}; {enhancements}";
+    }
+
+    private string RunEnhancementsSelfTest()
+    {
+        // 1. 快录语法解析
+        var parsedTomorrow = QuickCaptureParser.Parse("明天 提交实验报告 #薄荷");
+        var parsedPinned = QuickCaptureParser.Parse("!核心论文精读 #暖阳");
+        var parsedDaily = QuickCaptureParser.Parse("每天 英语听力 20 分钟");
+        var parsedWeekdays = QuickCaptureParser.Parse("工作日 站会同步");
+        var parsedInboxPrefix = QuickCaptureParser.Parse("备忘 整理云盘照片");
+        var parsedInboxSuffix = QuickCaptureParser.Parse("看一本设计书 @待办箱");
+        var parsedBare = QuickCaptureParser.Parse("明天");
+        var quickCaptureValid = parsedTomorrow is { Text: "提交实验报告", Target: CaptureTarget.Tomorrow, AccentIndex: 1 }
+            && parsedPinned is { Text: "核心论文精读", IsPinned: true, AccentIndex: 3 }
+            && parsedDaily is { Text: "英语听力 20 分钟", Recurrence: RecurrenceRule.Daily }
+            && parsedWeekdays is { Text: "站会同步", Recurrence: RecurrenceRule.Weekdays }
+            && parsedInboxPrefix is { Text: "整理云盘照片", Target: CaptureTarget.Inbox }
+            && parsedInboxSuffix is { Text: "看一本设计书", Target: CaptureTarget.Inbox }
+            && parsedBare is { Text: "明天", Target: CaptureTarget.CurrentView };
+
+        // 2. 独立窗体上验证跨天移动、待办箱不结转、星标置顶、子步骤/备注、专注计时、复盘、热重载与报告导出
+        var directory = Path.Combine(DataDirectory, "enhancements");
+        var now = new DateTimeOffset(currentDate.ToDateTime(new TimeOnly(10, 30)), TimeZoneInfo.Local.GetUtcOffset(DateTime.Now));
+        using var form = new DailyGoalForm(
+            directory,
+            enableTrayIcon: false,
+            suppressDialogsForTests: true,
+            clockOverride: new FixedAppClock(now));
+
+        var t1 = form.AddTaskRecord("普通任务", currentDate);
+        var t2 = form.AddTaskRecord("重点任务", currentDate);
+        var movedTomorrow = t1 is not null && form.MoveTaskToDay(t1.Id, currentDate.AddDays(1))
+            && t1.Day == currentDate.AddDays(1) && t1.CarryCount == 0;
+        var movedBackToday = t1 is not null && form.MoveTaskToDay(t1.Id, currentDate)
+            && t1.Day == currentDate;
+        var movedInbox = t1 is not null && form.MoveTaskToInbox(t1.Id) && t1.IsInbox
+            && form.state.InboxTasks.Any(candidate => candidate.Id == t1.Id)
+            && form.state.TasksForDate(currentDate).All(candidate => candidate.Id != t1.Id);
+
+        // 待办箱任务不随跨天结转
+        if (t1 is not null)
+        {
+            t1.Day = currentDate.AddDays(-3);
+        }
+        var inboxRolloverState = form.state.Clone();
+        _ = new ScheduleService().ApplyRollover(inboxRolloverState, currentDate);
+        var inboxIsolatedFromRollover = inboxRolloverState.InboxTasks.Any(candidate => candidate.Id == t1?.Id && candidate.CarryCount == 0);
+
+        // 星标置顶排序
+        var t3 = form.AddTaskRecord("后加的任务", currentDate);
+        var pinnedFirst = t2 is not null && t3 is not null
+            && form.ToggleTaskPin(t2.Id)
+            && form.state.TasksForDate(currentDate).First().Id == t2.Id;
+
+        // 备注与子步骤持久化 + 行内展开高度 + 子步骤勾选
+        var subId = "sub-test-1";
+        var detailsSaved = t2 is not null && form.UpdateTaskDetails(
+            t2.Id,
+            "先读 Method 再复现实验",
+            [new SubTaskItem { Id = subId, Text = "精读第 3 节", Completed = false }, new SubTaskItem { Text = "跑 baseline", Completed = false }]);
+        var subToggled = t2 is not null && form.ToggleSubTask(t2.Id, subId)
+            && t2.SubTasks!.First(item => item.Id == subId).Completed;
+        var rowExpanded = t2 is not null && form.taskRows.TryGetValue(t2.Id, out var detailRow)
+            && detailRow.HasDetails
+            && ((detailRow.DetailsExpanded = true) && detailRow.Height > TaskRowControl.BaseHeight);
+        var reloadedDetails = new StateStore(directory).Load(currentDate).State.Tasks.First(candidate => candidate.Id == t2!.Id);
+        var detailsPersisted = detailsSaved && subToggled && rowExpanded
+            && reloadedDetails.Notes == "先读 Method 再复现实验"
+            && reloadedDetails.SubTasks is { Count: 2 }
+            && reloadedDetails.SubTasks[0].Completed;
+
+        // 专注计时（倒计时完成 + 贴边条联动 + 正计时结束累加）
+        var focusValid = false;
+        if (t2 is not null)
+        {
+            form.StartFocus(t2, 25);
+            var started = form.IsFocusRunning && form.peek.FocusActive && form.peek.FocusBadgeText == "25m";
+            form.ToggleFocusPause();
+            var pausedOk = form.IsFocusPaused && form.peek.FocusPaused;
+            form.ToggleFocusPause();
+            form.TickFocus(25 * 60);
+            var finishedOk = !form.IsFocusRunning && !form.peek.FocusActive && t2.FocusMinutes == 25 && t2.FocusSessions == 1;
+            form.StartFocus(t2, 0);
+            form.TickFocus(120);
+            form.StopFocus(recordElapsed: true, silent: true);
+            var countUpOk = t2.FocusMinutes == 27 && t2.FocusSessions == 2;
+            focusValid = started && pausedOk && finishedOk && countUpOk;
+        }
+
+        // 临时固定锁 & 热键防误收起
+        form.ToggleTemporaryPin();
+        var pinLocks = form.InteractionLocked;
+        form.ToggleTemporaryPin();
+        var pinUnlocks = !form.temporarilyPinned;
+
+        // 长期历史保留（90 天 / 永久）
+        var retentionState = new AppState { LastOpenedDate = currentDate };
+        retentionState.Tasks.Add(new TaskRecord { Id = "h-45", Text = "45天前", CompletedAt = now.AddDays(-45) });
+        retentionState.Tasks.Add(new TaskRecord { Id = "h-95", Text = "95天前", CompletedAt = now.AddDays(-95) });
+        retentionState.Settings.HistoryRetentionDays = 0;
+        var foreverKept = !retentionState.PruneHistory(currentDate) && retentionState.Tasks.Count == 2;
+        retentionState.Settings.HistoryRetentionDays = 90;
+        var ninetyKept = retentionState.PruneHistory(currentDate)
+            && retentionState.Tasks.Any(task => task.Id == "h-45")
+            && retentionState.Tasks.All(task => task.Id != "h-95");
+
+        // 历史搜索 + Markdown 导出 + 日终复盘顺延
+        form.state.Tasks.Add(new TaskRecord
+        {
+            Id = "done-today-1",
+            Text = "完成 MICCAI 论文精读",
+            Notes = "重点看消融实验",
+            FocusMinutes = 25,
+            Day = currentDate,
+            CompletedAt = now
+        });
+        var dailyMd = ReportExporter.BuildDailyMarkdown(form.state, currentDate);
+        var weeklyMd = ReportExporter.BuildWeeklyMarkdown(form.state, currentDate, 7);
+        var reportsValid = dailyMd.Contains("完成 MICCAI 论文精读", StringComparison.Ordinal)
+            && dailyMd.Contains("重点看消融实验", StringComparison.Ordinal)
+            && dailyMd.Contains("专注 25 分钟", StringComparison.Ordinal)
+            && weeklyMd.Contains("近 7 天周报", StringComparison.Ordinal);
+
+        form.historySearchQuery = "MICCAI";
+        form.RenderHistory();
+        var searchMatched = form.historyList.Controls.OfType<HistoryRowControl>().Count() == 1
+            && form.historySummary.Total == 1;
+        form.historySearchQuery = "不存在的关键词xyz";
+        form.RenderHistory();
+        var searchEmpty = !form.historyList.Controls.OfType<HistoryRowControl>().Any()
+            && form.historyEmpty.Title == "没有匹配的记录"
+            && form.historySummary.Total == 1;
+        form.historySearchQuery = "";
+
+        var deferredCount = form.DeferAllTodayToTomorrow();
+        var reviewDeferred = deferredCount >= 2 && !form.state.TasksForDate(currentDate).Any();
+
+        // 外部文件变更热重载（模拟另一台设备云盘同步写入 tasks.json）
+        var syncedState = form.state.Clone();
+        syncedState.Tasks.Add(new TaskRecord
+        {
+            Id = "cloud-sync-task",
+            Text = "云盘同步来的任务",
+            Day = currentDate,
+            SortOrder = 0,
+            AccentIndex = 2
+        });
+        syncedState.Settings.CloseToTray = false;
+        form.state.Settings.CloseToTray = true;
+        File.WriteAllText(
+            Path.Combine(directory, "tasks.json"),
+            JsonSerializer.Serialize(syncedState, new JsonSerializerOptions { WriteIndented = true }));
+        var externalReloaded = form.ApplyExternalFileReload()
+            && form.state.Tasks.Any(task => task.Id == "cloud-sync-task")
+            && form.state.Settings.CloseToTray; // 保留本机设备设置
+
+        // 新设置项持久化 + 轻柔音效 PCM WAV 合成
+        form.state.Settings.CloseToTray = false;
+        form.state.Settings.SoundEnabled = true;
+        form.state.Settings.HistoryRetentionDays = 90;
+        form.state.Settings.DefaultFocusMinutes = 45;
+        var newSettingsSaved = form.SaveState();
+        var reloadedNewSettings = new StateStore(directory).Load(currentDate).State.Settings;
+        var newSettingsValid = newSettingsSaved
+            && !reloadedNewSettings.CloseToTray
+            && reloadedNewSettings.SoundEnabled
+            && reloadedNewSettings.HistoryRetentionDays == 90
+            && reloadedNewSettings.DefaultFocusMinutes == 45;
+
+        var wavValid = Enum.GetValues<FeedbackSoundKind>().All(kind =>
+        {
+            var wav = SoundFeedback.GetOrCreateWav(kind);
+            return wav.Length > 44 && wav[0] == (byte)'R' && wav[1] == (byte)'I' && wav[2] == (byte)'F' && wav[3] == (byte)'F';
+        });
+
+        var allOk = quickCaptureValid && movedTomorrow && movedBackToday && movedInbox && inboxIsolatedFromRollover
+            && pinnedFirst && detailsPersisted && focusValid && pinLocks && pinUnlocks
+            && foreverKept && ninetyKept && reportsValid && searchMatched && searchEmpty
+            && reviewDeferred && externalReloaded && newSettingsValid && wavValid;
+        if (!allOk)
+        {
+            throw new InvalidOperationException(
+                $"Enhancements self-test failed: quickCapture={quickCaptureValid}, move={movedTomorrow}/{movedBackToday}/{movedInbox}, "
+                + $"inboxRollover={inboxIsolatedFromRollover}, pin={pinnedFirst}/{pinLocks}/{pinUnlocks}, details={detailsPersisted}, "
+                + $"focus={focusValid}, retention={foreverKept}/{ninetyKept}, reports={reportsValid}, search={searchMatched}/{searchEmpty}, "
+                + $"review={reviewDeferred}, externalReload={externalReloaded}, newSettings={newSettingsValid}, wav={wavValid}.");
+        }
+
+        return $"quickCapture={quickCaptureValid}; crossDayInbox={movedTomorrow && movedBackToday && movedInbox && inboxIsolatedFromRollover}; "
+            + $"pinAndDetails={pinnedFirst && detailsPersisted}; focus={focusValid}; retention90Forever={foreverKept && ninetyKept}; "
+            + $"reportsAndSearch={reportsValid && searchMatched && searchEmpty}; review={reviewDeferred}; externalSync={externalReloaded}; soundWav={wavValid}";
     }
 
     /// <summary>
@@ -728,8 +920,50 @@ internal sealed partial class DailyGoalForm
         var recurrenceMenuPath = CaptureUi(outputDirectory, "recurrence-menu.png");
         var recurrenceMenuVisible = taskMenu.Visible
             && taskMenu.Items.Cast<ToolStripItem>().Any(item => item.Text?.StartsWith("重复：每日", StringComparison.Ordinal) == true)
-            && taskMenu.Items.Cast<ToolStripItem>().Any(item => item.Text == "颜色");
+            && taskMenu.Items.Cast<ToolStripItem>().Any(item => item.Text == "颜色")
+            && taskMenu.Items.Cast<ToolStripItem>().Any(item => item.Text == "开始专注")
+            && taskMenu.Items.Cast<ToolStripItem>().Any(item => item.Text == "推迟到明天");
         taskMenu.Close();
+
+        ShowMainView(MainView.Inbox);
+        Application.DoEvents();
+        var inboxPath = CaptureUi(outputDirectory, "inbox.png");
+        var inboxLayout = ValidateUiLayout();
+        var inboxValid = state.InboxTasks.Any() && taskRows.ContainsKey("ui-inbox-1");
+
+        ShowMainView(MainView.Today);
+        Application.DoEvents();
+        var focusTask = state.Tasks.First(task => task.Id == "ui-2");
+        StartFocus(focusTask, 25);
+        taskRows["ui-2"].DetailsExpanded = true;
+        var expandSettle = Stopwatch.StartNew();
+        while (taskList.IsAnimating && expandSettle.ElapsedMilliseconds < 700)
+        {
+            Application.DoEvents();
+            Thread.Sleep(5);
+        }
+        Application.DoEvents();
+        var focusPath = CaptureUi(outputDirectory, "focus.png");
+        var focusLayout = ValidateUiLayout() && taskRows["ui-3"].Top >= taskRows["ui-2"].Bottom;
+        var focusUiValid = focusBanner.Visible && taskRows["ui-2"].Height > TaskRowControl.BaseHeight;
+        state.Settings.ReducedMotion = true;
+        state.Settings.AutoHideEnabled = true;
+        SetExpandedState(false);
+        Application.DoEvents();
+        var focusCollapsedPath = CaptureUi(outputDirectory, "focus-collapsed.png");
+        var focusCollapsedLayout = ValidateUiLayout() && peek.FocusActive;
+        SetExpandedState(true);
+        state.Settings.AutoHideEnabled = false;
+        taskRows["ui-2"].DetailsExpanded = false;
+        StopFocus(recordElapsed: false, silent: true);
+        Application.DoEvents();
+
+        ShowDailyReview();
+        Application.DoEvents();
+        var reviewPath = CaptureUi(outputDirectory, "review.png");
+        var reviewLayout = ValidateUiLayout();
+        HideDailyReview();
+        Application.DoEvents();
 
         ShowMainView(MainView.Tomorrow);
         Application.DoEvents();
@@ -883,7 +1117,7 @@ internal sealed partial class DailyGoalForm
             compact.Hide();
         }
 
-        var layoutValid = todayLayout && completedSectionVisible && xuanlingTasksLayout && xuanlingTasksArtwork && recurrenceMenuVisible && tomorrowLayout && tomorrowValid && dragLayout && dragGestureValid && emptyLayout
+        var layoutValid = todayLayout && completedSectionVisible && xuanlingTasksLayout && xuanlingTasksArtwork && recurrenceMenuVisible && inboxLayout && inboxValid && focusLayout && focusUiValid && focusCollapsedLayout && reviewLayout && tomorrowLayout && tomorrowValid && dragLayout && dragGestureValid && emptyLayout
             && xuanlingLayout && xuanlingArtworkVisible
             && templateLayout && templateReordered && templateRenamed && templateDeleted
             && recurringLayout && recurringManagerValid && recurringRuleChanged
@@ -895,13 +1129,13 @@ internal sealed partial class DailyGoalForm
             throw new InvalidOperationException(
                 "UI self-test failed: "
                 + $"today={todayLayout}, completedSection={completedSectionVisible}, xuanlingTasks={xuanlingTasksLayout}, xuanlingArt={xuanlingTasksArtwork}, "
-                + $"recurrenceMenu={recurrenceMenuVisible}, tomorrow={tomorrowLayout}/{tomorrowValid}, drag={dragLayout}/{dragGestureValid}, empty={emptyLayout}, "
+                + $"recurrenceMenu={recurrenceMenuVisible}, inbox={inboxLayout}/{inboxValid}, focus={focusLayout}/{focusUiValid}/{focusCollapsedLayout}, review={reviewLayout}, tomorrow={tomorrowLayout}/{tomorrowValid}, drag={dragLayout}/{dragGestureValid}, empty={emptyLayout}, "
                 + $"xuanlingEmpty={xuanlingLayout}/{xuanlingArtworkVisible}, template={templateLayout}/{templateReordered}/{templateRenamed}/{templateDeleted}, "
                 + $"recurring={recurringLayout}/{recurringManagerValid}/{recurringRuleChanged}, history={historyLayout}, settings={settingsLayout}, "
                 + $"light={lightLayout}, collapsed={collapsedLayout}, compact={compactLayout}/{compactTemplatesLayout}, activation={externalActivationValid}.");
         }
 
-        return $"today={todayPath}; xuanlingTasks={xuanlingTasksPath}; recurrenceMenu={recurrenceMenuPath}; tomorrow={tomorrowPath}; drag={dragPath}; empty={emptyPath}; xuanling={xuanlingPath}; templates={templatePath}; recurring={recurringPath}; history={historyPath}; settings={settingsPath}; light={lightPath}; collapsed={collapsedPath}; "
+        return $"today={todayPath}; xuanlingTasks={xuanlingTasksPath}; recurrenceMenu={recurrenceMenuPath}; inbox={inboxPath}; focus={focusPath}; focusCollapsed={focusCollapsedPath}; review={reviewPath}; tomorrow={tomorrowPath}; drag={dragPath}; empty={emptyPath}; xuanling={xuanlingPath}; templates={templatePath}; recurring={recurringPath}; history={historyPath}; settings={settingsPath}; light={lightPath}; collapsed={collapsedPath}; "
             + $"compact={compactPath}; compactTemplates={compactTemplatesPath}; tomorrowValid={tomorrowValid}; dragGesture={dragGestureValid}; templateActions={templateReordered && templateRenamed && templateDeleted}; recurringManager={recurringManagerValid && recurringRuleChanged}; externalActivation={externalActivationValid}; layout={layoutValid}";
     }
 
@@ -950,7 +1184,25 @@ internal sealed partial class DailyGoalForm
                 Day = currentDate,
                 SortOrder = 1,
                 AccentIndex = 2,
-                CarryCount = 1
+                CarryCount = 2,
+                Notes = "核对深色、浅色与玄翎三套主题边距",
+                SubTasks =
+                [
+                    new SubTaskItem { Id = "ui-sub-1", Text = "检查标签栏间距", Completed = true },
+                    new SubTaskItem { Id = "ui-sub-2", Text = "检查专注条进度渲染", Completed = false }
+                ],
+                FocusMinutes = 25,
+                FocusSessions = 1
+            },
+            new TaskRecord
+            {
+                Id = "ui-inbox-1",
+                Text = "整理暑期研究资料文件夹",
+                CreatedAt = DateTimeOffset.Now.AddHours(-3),
+                Day = currentDate,
+                IsInbox = true,
+                SortOrder = 0,
+                AccentIndex = 3
             },
             new TaskRecord
             {
@@ -1022,9 +1274,21 @@ internal sealed partial class DailyGoalForm
             : ClientRectangle;
         var screenBounds = RectangleToScreen(captureBounds);
         using var bitmap = new Bitmap(Math.Max(1, screenBounds.Width), Math.Max(1, screenBounds.Height), PixelFormat.Format32bppPArgb);
-        using (var graphics = Graphics.FromImage(bitmap))
+        try
         {
+            using var graphics = Graphics.FromImage(bitmap);
             graphics.CopyFromScreen(screenBounds.Location, Point.Empty, bitmap.Size, CopyPixelOperation.SourceCopy);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            if (targetWidth == CollapsedWidth)
+            {
+                peek.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            }
+            else
+            {
+                DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            }
         }
 
         bitmap.Save(path, ImageFormat.Png);
@@ -1079,11 +1343,13 @@ internal sealed partial class DailyGoalForm
             dragGrip,
             progressRing,
             themeCharacter,
+            pinButton,
             settingsButton,
             moreButton,
             closeButton,
             todayTab,
             tomorrowTab,
+            inboxTab,
             historyTab,
             todayView,
             historyView,
@@ -1092,7 +1358,9 @@ internal sealed partial class DailyGoalForm
             templateView,
             templateCloseButton,
             recurringView,
-            recurringCloseButton
+            recurringCloseButton,
+            reviewView,
+            reviewCloseButton
         };
         return fixedControls.All(control =>
             !control.Visible

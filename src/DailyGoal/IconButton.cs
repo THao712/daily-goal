@@ -12,6 +12,8 @@ internal sealed class IconButton : Control
 
 	private bool pressed;
 
+	private bool active;
+
 	[Browsable(false)]
 	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
 	public IconKind Icon { get; set; }
@@ -19,6 +21,21 @@ internal sealed class IconButton : Control
 	[Browsable(false)]
 	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
 	public IconButtonTone Tone { get; set; }
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public bool Active
+	{
+		get => active;
+		set
+		{
+			if (active != value)
+			{
+				active = value;
+				Invalidate();
+			}
+		}
+	}
 
 	public IconButton()
 	{
@@ -114,7 +131,14 @@ internal sealed class IconButton : Control
 			IconButtonTone.Danger => UiTheme.Danger, 
 			_ => UiTheme.TextMuted, 
 		};
-		using (SolidBrush brush = new SolidBrush((Tone != IconButtonTone.Accent) ? ((!hovered) ? BackColor : ((Tone == IconButtonTone.Danger) ? UiTheme.DangerSoft : UiTheme.SurfaceHover)) : (hovered ? UiTheme.AccentHover : UiTheme.Mint)))
+		using (SolidBrush brush = new SolidBrush(
+			Tone == IconButtonTone.Accent
+				? (hovered ? UiTheme.AccentHover : UiTheme.Mint)
+				: active
+					? UiTheme.AccentSoft
+					: !hovered
+						? BackColor
+						: (Tone == IconButtonTone.Danger ? UiTheme.DangerSoft : UiTheme.SurfaceHover)))
 		{
 			e.Graphics.FillPath(brush, path);
 		}
@@ -123,7 +147,16 @@ internal sealed class IconButton : Control
 			using Pen pen = new Pen(Color.FromArgb(118, 255, 255, 255), 1f);
 			e.Graphics.DrawPath(pen, path);
 		}
-		Color color2 = ((Tone == IconButtonTone.Accent) ? UiTheme.OnAccent(UiTheme.Mint) : (hovered ? color : UiTheme.TextMuted));
+		else if (active)
+		{
+			using Pen pen = new Pen(UiTheme.WithAlpha(UiTheme.Mint, 140), 1f);
+			e.Graphics.DrawPath(pen, path);
+		}
+		Color color2 = Tone == IconButtonTone.Accent
+			? UiTheme.OnAccent(UiTheme.Mint)
+			: active
+				? UiTheme.AccentText
+				: (hovered ? color : UiTheme.TextMuted);
 		RectangleF bounds = RectangleF.Inflate(rectangleF, -UiTheme.Sf(6), -UiTheme.Sf(6));
 		IconPainter.Draw(e.Graphics, Icon, bounds, color2, (Tone == IconButtonTone.Accent) ? 1.9f : 1.7f);
 		if (Focused && ShowFocusCues)

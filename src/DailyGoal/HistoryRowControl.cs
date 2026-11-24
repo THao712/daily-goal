@@ -106,6 +106,10 @@ internal sealed class HistoryRowControl : Control
 		e.Graphics.FillRectangle(brush2, UiTheme.S(8), UiTheme.S(13), UiTheme.S(3), base.Height - UiTheme.S(26));
 		TextRenderer.DrawText(e.Graphics, Task.Text, UiTheme.BodyFont, new Rectangle(UiTheme.S(26), UiTheme.S(10), base.Width - UiTheme.S(154), UiTheme.S(31)), UiTheme.TextMuted, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
 		string text = Task.CompletedAt?.ToLocalTime().ToString("HH:mm", CultureInfo.CurrentCulture) ?? "";
+		if (Task.FocusMinutes > 0)
+		{
+			text = string.IsNullOrEmpty(text) ? $"专注 {Task.FocusMinutes} 分钟" : $"{text}  ·  专注 {Task.FocusMinutes} 分钟";
+		}
 		TextRenderer.DrawText(e.Graphics, text, UiTheme.SmallFont, new Rectangle(UiTheme.S(26), UiTheme.S(43), base.Width - UiTheme.S(154), UiTheme.S(22)), UiTheme.TextFaint, TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
 		if (restoreHovered)
 		{

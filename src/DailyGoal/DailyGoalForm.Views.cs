@@ -19,7 +19,7 @@ internal sealed partial class DailyGoalForm
         taskInput.BorderStyle = BorderStyle.None;
         taskInput.BackColor = UiTheme.Surface;
         taskInput.ForeColor = UiTheme.Text;
-        taskInput.PlaceholderText = "写下一件想完成的事";
+        taskInput.PlaceholderText = "写下一件想完成的事（支持 !重点 / 明天 / 每天 / #颜色）";
         taskInput.MaxLength = 160;
         taskInput.KeyDown += (_, args) =>
         {
@@ -35,7 +35,7 @@ internal sealed partial class DailyGoalForm
             }
 
             args.SuppressKeyPress = true;
-            AddTask();
+            AddTask(shiftAlternateDay: args.Shift);
         };
         inputShell.Controls.Add(taskInput);
 
@@ -50,6 +50,8 @@ internal sealed partial class DailyGoalForm
         addButton.Click += (_, _) => AddTask();
         todayView.Controls.Add(addButton);
 
+        WireFocusBanner();
+
         remainingLabel.Location = new Point(UiTheme.S(35), UiTheme.S(84));
         remainingLabel.Size = new Size(UiTheme.S(450), UiTheme.S(28));
         remainingLabel.Font = UiTheme.SmallBoldFont;
@@ -57,15 +59,12 @@ internal sealed partial class DailyGoalForm
         remainingLabel.BackColor = UiTheme.Canvas;
         todayView.Controls.Add(remainingLabel);
 
-        taskList.Location = new Point(UiTheme.S(22), UiTheme.S(116));
-        taskList.Size = new Size(ExpandedWidth - UiTheme.S(44), todayView.Height - UiTheme.S(128));
         taskList.Padding = new Padding(UiTheme.S(7), UiTheme.S(6), UiTheme.S(7), UiTheme.S(8));
         taskList.BackColor = UiTheme.Canvas;
         todayView.Controls.Add(taskList);
 
-        todayEmpty.Location = taskList.Location;
-        todayEmpty.Size = taskList.Size;
         todayView.Controls.Add(todayEmpty);
+        LayoutTodayListArea();
         todayEmpty.BringToFront();
     }
 
@@ -78,11 +77,35 @@ internal sealed partial class DailyGoalForm
         content.Controls.Add(historyView);
 
         historySummary.Location = new Point(UiTheme.S(32), UiTheme.S(12));
-        historySummary.Size = new Size(ExpandedWidth - UiTheme.S(64), UiTheme.S(150));
+        historySummary.Size = new Size(ExpandedWidth - UiTheme.S(64), UiTheme.S(146));
         historyView.Controls.Add(historySummary);
 
-        historyList.Location = new Point(UiTheme.S(22), UiTheme.S(172));
-        historyList.Size = new Size(ExpandedWidth - UiTheme.S(44), historyView.Height - UiTheme.S(184));
+        historySearchShell.Location = new Point(UiTheme.S(32), UiTheme.S(168));
+        historySearchShell.Size = new Size(ExpandedWidth - UiTheme.S(118), UiTheme.S(42));
+        historyView.Controls.Add(historySearchShell);
+
+        historySearchInput.Location = new Point(UiTheme.S(14), UiTheme.S(10));
+        historySearchInput.Size = new Size(historySearchShell.Width - UiTheme.S(28), UiTheme.S(24));
+        historySearchInput.Font = UiTheme.SmallFont;
+        historySearchInput.BorderStyle = BorderStyle.None;
+        historySearchInput.BackColor = UiTheme.Surface;
+        historySearchInput.ForeColor = UiTheme.Text;
+        historySearchInput.PlaceholderText = "搜索完成记录或备注…";
+        historySearchInput.MaxLength = 80;
+        historySearchInput.TextChanged += (_, _) =>
+        {
+            historySearchQuery = historySearchInput.Text.Trim();
+            RenderHistory();
+        };
+        historySearchShell.Controls.Add(historySearchInput);
+
+        ConfigureIconButton(exportReportButton, IconKind.Export, "复制/导出 Markdown 日报与周报", new Point(ExpandedWidth - UiTheme.S(78), UiTheme.S(168)), new Size(UiTheme.S(46), UiTheme.S(42)));
+        exportReportButton.BackColor = UiTheme.Canvas;
+        exportReportButton.Click += (_, _) => ShowReportMenu();
+        historyView.Controls.Add(exportReportButton);
+
+        historyList.Location = new Point(UiTheme.S(22), UiTheme.S(218));
+        historyList.Size = new Size(ExpandedWidth - UiTheme.S(44), Math.Max(UiTheme.S(100), historyView.Height - UiTheme.S(230)));
         historyList.Padding = new Padding(UiTheme.S(7), UiTheme.S(4), UiTheme.S(7), UiTheme.S(8));
         historyList.BackColor = UiTheme.Canvas;
         historyView.Controls.Add(historyList);
@@ -142,9 +165,9 @@ internal sealed partial class DailyGoalForm
         var settingsTitle = CreateLabel("设置", new Point(UiTheme.S(76), UiTheme.S(22)), new Size(UiTheme.S(280), UiTheme.S(40)), UiTheme.TitleFont, UiTheme.Text);
         settingsView.Controls.Add(settingsTitle);
 
-        ConfigureIconButton(settingsCloseButton, IconKind.Close, "关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
+        ConfigureIconButton(settingsCloseButton, IconKind.Close, "收起/关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
         settingsCloseButton.Tone = IconButtonTone.Danger;
-        settingsCloseButton.Click += (_, _) => Close();
+        settingsCloseButton.Click += (_, _) => HandleCloseButtonClick();
         settingsView.Controls.Add(settingsCloseButton);
 
         settingsScroll.Location = new Point(0, UiTheme.S(76));
@@ -274,8 +297,54 @@ internal sealed partial class DailyGoalForm
         reducedMotionToggle.CheckedChanged += (_, _) => SaveSettingsFromControls();
         AddToggleRow("减少动态效果", "关闭粒子并缩短界面动画", reducedMotionToggle);
 
+        soundToggle.CheckedChanged += (_, _) => SaveSettingsFromControls();
+        AddToggleRow("完成音效", "任务完成、全部达成和专注结束时播放轻柔提示音", soundToggle);
+
+        closeToTrayToggle.CheckedChanged += (_, _) => SaveSettingsFromControls();
+        AddToggleRow("关闭按钮收起隐藏", "点击右上角 × 收起到边缘/托盘，右键托盘可退出", closeToTrayToggle);
+
         startupToggle.CheckedChanged += StartupToggleOnChanged;
         AddToggleRow("开机启动", "登录 Windows 后自动驻留托盘", startupToggle);
+
+        AddSettingText("默认专注时长", "右键任务开始专注时的默认番茄时长", 260);
+        focusMinutesChips.Labels = ["15 分钟", "25 分钟", "45 分钟"];
+        focusMinutesChips.Location = new Point(ExpandedWidth - UiTheme.S(284), settingsCursor + UiTheme.S(9));
+        focusMinutesChips.Size = new Size(UiTheme.S(250), UiTheme.S(42));
+        focusMinutesChips.SelectedChanged += (_, _) => SaveSettingsFromControls();
+        settingsContent.Controls.Add(focusMinutesChips);
+        settingsCursor += UiTheme.S(68);
+        AddSettingSeparator();
+
+        AddSettingText("记录保留期", "控制已完成记录的自动清理周期", 260);
+        historyRetentionChips.Labels = ["30 天", "90 天", "永久"];
+        historyRetentionChips.Location = new Point(ExpandedWidth - UiTheme.S(254), settingsCursor + UiTheme.S(9));
+        historyRetentionChips.Size = new Size(UiTheme.S(220), UiTheme.S(42));
+        historyRetentionChips.SelectedChanged += (_, _) => SaveSettingsFromControls();
+        settingsContent.Controls.Add(historyRetentionChips);
+        settingsCursor += UiTheme.S(68);
+        AddSettingSeparator();
+
+        AddSettingText("陪伴插画", "自定义标题栏头像与空态/背景水印（PNG/JPG）", 420);
+        customAvatarButton.Text = "选头像…";
+        customAvatarButton.Location = new Point(UiTheme.S(34), settingsCursor + UiTheme.S(68));
+        customAvatarButton.Size = new Size(UiTheme.S(112), UiTheme.S(42));
+        customAvatarButton.Click += (_, _) => ChooseCustomArtwork(isAvatar: true);
+        settingsContent.Controls.Add(customAvatarButton);
+
+        customSceneButton.Text = "选背景图…";
+        customSceneButton.Location = new Point(UiTheme.S(156), settingsCursor + UiTheme.S(68));
+        customSceneButton.Size = new Size(UiTheme.S(122), UiTheme.S(42));
+        customSceneButton.Click += (_, _) => ChooseCustomArtwork(isAvatar: false);
+        settingsContent.Controls.Add(customSceneButton);
+
+        resetArtworkButton.Text = "恢复默认";
+        resetArtworkButton.Location = new Point(UiTheme.S(288), settingsCursor + UiTheme.S(68));
+        resetArtworkButton.Size = new Size(UiTheme.S(108), UiTheme.S(42));
+        resetArtworkButton.Visible = false;
+        resetArtworkButton.Click += (_, _) => ResetCustomArtwork();
+        settingsContent.Controls.Add(resetArtworkButton);
+        settingsCursor += UiTheme.S(124);
+        AddSettingSeparator();
 
         AddSettingText("本地数据", "自动保留 30 天快照，可手动迁移任务", 300);
         exportBackupButton.Text = "导出备份";

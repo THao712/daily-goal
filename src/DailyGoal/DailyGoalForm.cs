@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using Microsoft.Win32;
 
 namespace DailyGoal;
 
@@ -7,6 +8,7 @@ internal enum MainView
 {
     Today,
     Tomorrow,
+    Inbox,
     History
 }
 
@@ -49,11 +51,13 @@ internal sealed partial class DailyGoalForm : Form
     private readonly Label dateLabel = new();
     private readonly ProgressRing progressRing = new();
     private readonly CharacterBadgeControl themeCharacter = new();
+    private readonly IconButton pinButton = new();
     private readonly IconButton settingsButton = new();
     private readonly IconButton moreButton = new();
     private readonly IconButton closeButton = new();
     private readonly SegmentButton todayTab = new();
     private readonly SegmentButton tomorrowTab = new();
+    private readonly SegmentButton inboxTab = new();
     private readonly SegmentButton historyTab = new();
     private readonly Panel todayView = new();
     private readonly Panel historyView = new();
@@ -67,6 +71,9 @@ internal sealed partial class DailyGoalForm : Form
     private readonly TaskFlowPanel taskList = new();
     private readonly EmptyStateControl todayEmpty = new();
     private readonly HistorySummaryControl historySummary = new();
+    private readonly InputShell historySearchShell = new();
+    private readonly TextBox historySearchInput = new();
+    private readonly IconButton exportReportButton = new();
     private readonly StackScrollPanel historyList = new();
     private readonly EmptyStateControl historyEmpty = new();
     private readonly UndoBar undoBar = new();
@@ -89,6 +96,13 @@ internal sealed partial class DailyGoalForm : Form
     private readonly ParticleChoiceControl particleChoice = new();
     private readonly ToggleSwitch reducedMotionToggle = new();
     private readonly ToggleSwitch startupToggle = new();
+    private readonly ToggleSwitch closeToTrayToggle = new();
+    private readonly ToggleSwitch soundToggle = new();
+    private readonly ChoiceChips focusMinutesChips = new();
+    private readonly ChoiceChips historyRetentionChips = new();
+    private readonly SegmentButton customAvatarButton = new();
+    private readonly SegmentButton customSceneButton = new();
+    private readonly SegmentButton resetArtworkButton = new();
     private readonly SegmentButton exportBackupButton = new();
     private readonly SegmentButton importBackupButton = new();
     private readonly Label dataPathLabel = new();
@@ -115,6 +129,7 @@ internal sealed partial class DailyGoalForm : Form
     private readonly ContextMenuStrip moreMenu = new();
     private readonly ContextMenuStrip taskMenu = new();
     private readonly ContextMenuStrip templateMenu = new();
+    private readonly ContextMenuStrip reportMenu = new();
     private readonly bool trayEnabled;
     private readonly bool suppressDialogs;
     private NotifyIcon? trayIcon;
@@ -125,6 +140,7 @@ internal sealed partial class DailyGoalForm : Form
     private readonly System.Windows.Forms.Timer hoverTimer = new();
     private readonly System.Windows.Forms.Timer particleTimer = new();
     private readonly System.Windows.Forms.Timer undoTimer = new();
+    private readonly System.Windows.Forms.Timer undoCountdownTimer = new();
     private readonly System.Windows.Forms.Timer dateTimer = new();
     private readonly System.Windows.Forms.Timer statusTimer = new();
     private readonly HashSet<System.Windows.Forms.Timer> rowAnimationTimers = [];
@@ -141,6 +157,7 @@ internal sealed partial class DailyGoalForm : Form
     private bool slideUsesPosition;
     private DateTime lastInside = DateTime.Now;
     private DateTime? peekHoverStart;
+    private DateTime undoShownAt;
     private MainView currentView = MainView.Today;
     private bool settingsVisible;
     private bool dragInProgress;
@@ -151,6 +168,14 @@ internal sealed partial class DailyGoalForm : Form
     private bool hotkeyRegistered;
     private bool railDragging;
     private bool suppressActivationOnShow;
+    private bool temporarilyPinned;
+    private bool hotkeyHoldActive;
+    private bool historyDirty = true;
+    private bool closeToTrayHintShown;
+    private bool eveningBalloonPending;
+    private bool displaySettingsSubscribed;
+    private string historySearchQuery = "";
+    private StateFileWatcher? stateFileWatcher;
     private List<string>? dragOriginalOrder;
     private TaskRowControl? activeDragRow;
     private TaskDragGhost? taskDragGhost;
@@ -159,6 +184,8 @@ internal sealed partial class DailyGoalForm : Form
     private int templateDragIndex = -1;
     private Image? xuanlingAvatar;
     private Image? xuanlingScene;
+    private Image? customAvatar;
+    private Image? customScene;
 
     public string DataDirectory => stateStore.DataDirectory;
     public bool DataDirectoryExists => Directory.Exists(DataDirectory);
@@ -239,11 +266,16 @@ internal sealed partial class DailyGoalForm : Form
         BuildWindow();
         xuanlingAvatar = LoadThemeImage("xuanling-avatar.png");
         xuanlingScene = LoadThemeImage("xuanling-scene.png");
+        ReloadCustomArtwork();
         BuildContent();
         WireTimers();
         ApplySettingsToControls();
         RenderAll();
         SwitchPalette(state.Settings.Theme);
+        StartExternalFileWatcher();
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        displaySettingsSubscribed = true;
+        Deactivate += (_, _) => hotkeyHoldActive = false;
 
         Shown += (_, _) => ShowPendingStorageWarning();
     }
@@ -326,7 +358,7 @@ internal sealed partial class DailyGoalForm : Form
         }
 
         RemapThemeColors(this, map);
-        foreach (var menu in new[] { moreMenu, taskMenu, templateMenu, trayMenu })
+        foreach (var menu in new[] { moreMenu, taskMenu, templateMenu, reportMenu, trayMenu })
         {
             if (menu is not null)
             {
@@ -396,10 +428,9 @@ internal sealed partial class DailyGoalForm : Form
         suppressSettingsEvents = false;
     }
 
-    private static Image? LoadThemeImage(string fileName)
+    private static Image? LoadImageFile(string? path)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "assets", fileName);
-        if (!File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             return null;
         }
@@ -416,18 +447,33 @@ internal sealed partial class DailyGoalForm : Form
         }
     }
 
+    private static Image? LoadThemeImage(string fileName)
+    {
+        return LoadImageFile(Path.Combine(AppContext.BaseDirectory, "assets", fileName));
+    }
+
+    private void ReloadCustomArtwork()
+    {
+        customAvatar?.Dispose();
+        customAvatar = LoadImageFile(state.Settings.CustomAvatarPath);
+        customScene?.Dispose();
+        customScene = LoadImageFile(state.Settings.CustomScenePath);
+    }
+
     private void ApplyThemeArtwork()
     {
-        var visible = UiTheme.Mode == AppThemeMode.Xuanling && xuanlingAvatar is not null;
-        themeCharacter.CharacterImage = visible ? xuanlingAvatar : null;
-        themeCharacter.Visible = visible;
-        var scene = visible ? xuanlingScene ?? xuanlingAvatar : null;
+        var avatar = customAvatar ?? (UiTheme.Mode == AppThemeMode.Xuanling ? xuanlingAvatar : null);
+        var scene = customScene ?? (UiTheme.Mode == AppThemeMode.Xuanling ? xuanlingScene ?? xuanlingAvatar : null);
+        themeCharacter.CharacterImage = avatar;
+        themeCharacter.Visible = avatar is not null && !settingsVisible && !templateView.Visible && !recurringView.Visible && !reviewView.Visible;
         todayEmpty.CharacterImage = scene;
         historyEmpty.CharacterImage = scene;
+        reviewEmpty.CharacterImage = scene;
         taskList.ThemeWatermark = scene;
         themeCharacter.Invalidate();
         todayEmpty.Invalidate();
         historyEmpty.Invalidate();
+        reviewEmpty.Invalidate();
         taskList.Invalidate();
     }
 
@@ -556,7 +602,24 @@ internal sealed partial class DailyGoalForm : Form
                 ShowFromTray();
             }
         };
-        trayIcon.BalloonTipClicked += (_, _) => ShowFromTray(true);
+        trayIcon.BalloonTipClicked += (_, _) =>
+        {
+            if (eveningBalloonPending)
+            {
+                eveningBalloonPending = false;
+                ShowFromTray();
+                ShowDailyReview();
+            }
+            else if (focusBalloonPending)
+            {
+                focusBalloonPending = false;
+                ShowFromTray();
+            }
+            else
+            {
+                ShowFromTray(true);
+            }
+        };
     }
 
     private void ShowFromTray(bool focusInput = false)
@@ -570,6 +633,7 @@ internal sealed partial class DailyGoalForm : Form
         lastInside = DateTime.Now.AddMilliseconds(1800);
         if (focusInput)
         {
+            hotkeyHoldActive = true;
             if (settingsVisible)
             {
                 HideSettings();
@@ -581,6 +645,10 @@ internal sealed partial class DailyGoalForm : Form
             if (recurringView.Visible)
             {
                 HideRecurringManager();
+            }
+            if (reviewView.Visible)
+            {
+                HideDailyReview();
             }
             ShowMainView(MainView.Today);
         }
@@ -595,6 +663,179 @@ internal sealed partial class DailyGoalForm : Form
                 taskInput.Select(taskInput.TextLength, 0);
             });
         }
+    }
+
+    internal void ToggleTemporaryPin()
+    {
+        temporarilyPinned = !temporarilyPinned;
+        pinButton.Active = temporarilyPinned;
+        toolTip.SetToolTip(pinButton, temporarilyPinned ? "已临时固定（点击恢复自动收起）" : "临时固定展开（不自动收起）");
+        if (temporarilyPinned)
+        {
+            SetExpandedState(true);
+            ShowTransientStatus("已临时固定窗口");
+        }
+        else
+        {
+            lastInside = DateTime.Now;
+            ShowTransientStatus("已恢复自动收起");
+        }
+    }
+
+    private void HandleCloseButtonClick()
+    {
+        if (trayEnabled && state.Settings.CloseToTray)
+        {
+            hotkeyHoldActive = false;
+            if (temporarilyPinned)
+            {
+                temporarilyPinned = false;
+                pinButton.Active = false;
+            }
+            if (settingsVisible)
+            {
+                HideSettings();
+            }
+            if (templateView.Visible)
+            {
+                HideTemplateManager();
+            }
+            if (recurringView.Visible)
+            {
+                HideRecurringManager();
+            }
+            if (reviewView.Visible)
+            {
+                HideDailyReview();
+            }
+
+            if (state.Settings.AutoHideEnabled)
+            {
+                SetExpandedState(false);
+            }
+            else
+            {
+                Hide();
+                if (!closeToTrayHintShown && trayIcon is not null)
+                {
+                    closeToTrayHintShown = true;
+                    trayIcon.BalloonTipTitle = "Daily Goal";
+                    trayIcon.BalloonTipText = "已隐藏到系统托盘，右键托盘图标可彻底退出";
+                    trayIcon.ShowBalloonTip(4000);
+                }
+            }
+            return;
+        }
+
+        Close();
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        var editingText = ActiveControl is TextBoxBase;
+        if (keyData == (Keys.Control | Keys.Z) && !editingText && undoEntry is not null && undoBar.Visible)
+        {
+            UndoLast();
+            return true;
+        }
+
+        if (keyData == Keys.Escape && !editingText)
+        {
+            if (settingsVisible)
+            {
+                HideSettings();
+                return true;
+            }
+            if (templateView.Visible)
+            {
+                HideTemplateManager();
+                return true;
+            }
+            if (recurringView.Visible)
+            {
+                HideRecurringManager();
+                return true;
+            }
+            if (reviewView.Visible)
+            {
+                HideDailyReview();
+                return true;
+            }
+            if (state.Settings.AutoHideEnabled && !temporarilyPinned && targetWidth == ExpandedWidth)
+            {
+                hotkeyHoldActive = false;
+                SetExpandedState(false);
+                return true;
+            }
+        }
+
+        if (keyData == Keys.Escape && ActiveControl == taskInput && taskInput.TextLength == 0)
+        {
+            hotkeyHoldActive = false;
+            if (state.Settings.AutoHideEnabled && !temporarilyPinned)
+            {
+                SetExpandedState(false);
+            }
+            return true;
+        }
+
+        if (keyData == (Keys.Control | Keys.D1))
+        {
+            ExitSubViewsToMain(MainView.Today);
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.D2))
+        {
+            ExitSubViewsToMain(MainView.Tomorrow);
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.D3))
+        {
+            ExitSubViewsToMain(MainView.Inbox);
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.D4))
+        {
+            ExitSubViewsToMain(MainView.History);
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.N))
+        {
+            ExitSubViewsToMain(currentView == MainView.History ? MainView.Today : currentView);
+            taskInput.Focus();
+            taskInput.Select(taskInput.TextLength, 0);
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.F))
+        {
+            ExitSubViewsToMain(MainView.History);
+            historySearchInput.Focus();
+            historySearchInput.SelectAll();
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private void ExitSubViewsToMain(MainView view)
+    {
+        if (settingsVisible)
+        {
+            HideSettings();
+        }
+        if (templateView.Visible)
+        {
+            HideTemplateManager();
+        }
+        if (recurringView.Visible)
+        {
+            HideRecurringManager();
+        }
+        if (reviewView.Visible)
+        {
+            HideDailyReview();
+        }
+        ShowMainView(view);
     }
 
     internal void HandleExternalActivation()
@@ -690,8 +931,9 @@ internal sealed partial class DailyGoalForm : Form
         var remaining = state.TasksForDate(currentDate).Count();
         state.LastReminderDate = currentDate;
         _ = stateStore.Save(state, out _);
+        eveningBalloonPending = true;
         trayIcon.BalloonTipTitle = "Daily Goal";
-        trayIcon.BalloonTipText = $"今天还剩 {remaining} 项任务，回来看看吧";
+        trayIcon.BalloonTipText = $"今天还剩 {remaining} 项任务，点击进入今日复盘";
         trayIcon.ShowBalloonTip(8000);
     }
 
@@ -792,7 +1034,7 @@ internal sealed partial class DailyGoalForm : Form
             return;
         }
 
-        var import = backupService.ReadPortable(dialog.FileName, currentDate);
+        var import = backupService.ReadPortable(dialog.FileName, currentDate, state.Settings.HistoryRetentionDays);
         if (!import.Success)
         {
             ShowStorageWarning(import.Error ?? "备份文件无效。");
@@ -984,20 +1226,20 @@ internal sealed partial class DailyGoalForm : Form
 
         titleLabel.Text = "今日计划";
         titleLabel.Location = new Point(UiTheme.S(32), UiTheme.S(20));
-        titleLabel.Size = new Size(UiTheme.S(350), UiTheme.S(40));
+        titleLabel.Size = new Size(UiTheme.S(334), UiTheme.S(40));
         titleLabel.Font = UiTheme.TitleFont;
         titleLabel.ForeColor = UiTheme.Text;
         titleLabel.BackColor = UiTheme.WindowTop;
         content.Controls.Add(titleLabel);
 
         dateLabel.Location = new Point(UiTheme.S(33), UiTheme.S(59));
-        dateLabel.Size = new Size(UiTheme.S(340), UiTheme.S(26));
+        dateLabel.Size = new Size(UiTheme.S(334), UiTheme.S(26));
         dateLabel.Font = UiTheme.SmallFont;
         dateLabel.ForeColor = UiTheme.TextMuted;
         dateLabel.BackColor = UiTheme.WindowTop;
         content.Controls.Add(dateLabel);
 
-        progressRing.Location = new Point(ExpandedWidth - UiTheme.S(170), UiTheme.S(18));
+        progressRing.Location = new Point(ExpandedWidth - UiTheme.S(206), UiTheme.S(18));
         progressRing.Size = new Size(UiTheme.S(60), UiTheme.S(60));
         content.Controls.Add(progressRing);
 
@@ -1016,6 +1258,10 @@ internal sealed partial class DailyGoalForm : Form
         // 容器本身不换游标：Cursor 会被子控件继承，任务行等内部控件要保持自己的光标。
         AttachWindowDrag(content, showDragCursor: false);
 
+        ConfigureIconButton(pinButton, IconKind.Pin, "临时固定展开（不自动收起）", new Point(ExpandedWidth - UiTheme.S(140), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
+        pinButton.Click += (_, _) => ToggleTemporaryPin();
+        content.Controls.Add(pinButton);
+
         ConfigureIconButton(settingsButton, IconKind.Settings, "设置", new Point(ExpandedWidth - UiTheme.S(94), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
         settingsButton.Click += (_, _) => ShowSettings();
         content.Controls.Add(settingsButton);
@@ -1024,27 +1270,33 @@ internal sealed partial class DailyGoalForm : Form
         moreButton.Click += (_, _) => moreMenu.Show(moreButton, new Point(0, moreButton.Height + 2));
         content.Controls.Add(moreButton);
 
-        ConfigureIconButton(closeButton, IconKind.Close, "关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
+        ConfigureIconButton(closeButton, IconKind.Close, "收起/关闭", new Point(ExpandedWidth - UiTheme.S(48), UiTheme.S(24)), new Size(UiTheme.S(40), UiTheme.S(40)));
         closeButton.Tone = IconButtonTone.Danger;
-        closeButton.Click += (_, _) => Close();
+        closeButton.Click += (_, _) => HandleCloseButtonClick();
         content.Controls.Add(closeButton);
 
         todayTab.Text = "今日";
         todayTab.Location = new Point(UiTheme.S(32), UiTheme.S(94));
-        todayTab.Size = new Size(UiTheme.S(102), UiTheme.S(44));
+        todayTab.Size = new Size(UiTheme.S(82), UiTheme.S(44));
         todayTab.Active = true;
         todayTab.Click += (_, _) => ShowMainView(MainView.Today);
         content.Controls.Add(todayTab);
 
         tomorrowTab.Text = "明日";
-        tomorrowTab.Location = new Point(UiTheme.S(140), UiTheme.S(94));
-        tomorrowTab.Size = new Size(UiTheme.S(102), UiTheme.S(44));
+        tomorrowTab.Location = new Point(UiTheme.S(118), UiTheme.S(94));
+        tomorrowTab.Size = new Size(UiTheme.S(82), UiTheme.S(44));
         tomorrowTab.Click += (_, _) => ShowMainView(MainView.Tomorrow);
         content.Controls.Add(tomorrowTab);
 
+        inboxTab.Text = "待办箱";
+        inboxTab.Location = new Point(UiTheme.S(204), UiTheme.S(94));
+        inboxTab.Size = new Size(UiTheme.S(82), UiTheme.S(44));
+        inboxTab.Click += (_, _) => ShowMainView(MainView.Inbox);
+        content.Controls.Add(inboxTab);
+
         historyTab.Text = "记录";
-        historyTab.Location = new Point(UiTheme.S(248), UiTheme.S(94));
-        historyTab.Size = new Size(UiTheme.S(102), UiTheme.S(44));
+        historyTab.Location = new Point(UiTheme.S(290), UiTheme.S(94));
+        historyTab.Size = new Size(UiTheme.S(82), UiTheme.S(44));
         historyTab.Click += (_, _) => ShowMainView(MainView.History);
         content.Controls.Add(historyTab);
 
@@ -1053,6 +1305,7 @@ internal sealed partial class DailyGoalForm : Form
         BuildSettingsView();
         BuildTemplateView();
         BuildRecurringView();
+        BuildReviewView();
         BuildUndoBar();
         BuildMoreMenu();
         UpdateDateText();
@@ -1076,9 +1329,13 @@ internal sealed partial class DailyGoalForm : Form
 
     private void BuildMoreMenu()
     {
+        var dailyReviewItem = new ToolStripMenuItem("今日复盘");
+        dailyReviewItem.Click += (_, _) => ShowDailyReview();
+        var copyDailyReportItem = new ToolStripMenuItem("复制今日 Markdown 日报");
+        copyDailyReportItem.Click += (_, _) => CopyDailyReportToClipboard();
         var clearToday = new ToolStripMenuItem("清空今日任务");
         clearToday.Click += (_, _) => ClearTodayTasks();
-        var clearHistory = new ToolStripMenuItem("清空 30 天记录");
+        var clearHistory = new ToolStripMenuItem("清空完成记录");
         clearHistory.Click += (_, _) => ClearHistory();
         var recurringManager = new ToolStripMenuItem("重复任务管理");
         recurringManager.Click += (_, _) => ShowRecurringManager(null);
@@ -1090,6 +1347,9 @@ internal sealed partial class DailyGoalForm : Form
         lightThemeItem.Click += (_, _) => SelectTheme(AppThemeMode.Light);
         xuanlingThemeItem.Click += (_, _) => SelectTheme(AppThemeMode.Xuanling);
         themeItem.DropDownItems.AddRange([darkThemeItem, lightThemeItem, xuanlingThemeItem]);
+        moreMenu.Items.Add(dailyReviewItem);
+        moreMenu.Items.Add(copyDailyReportItem);
+        moreMenu.Items.Add(new ToolStripSeparator());
         moreMenu.Items.Add(themeItem);
         moreMenu.Items.Add(recurringManager);
         moreMenu.Items.Add(new ToolStripSeparator());
@@ -1099,7 +1359,12 @@ internal sealed partial class DailyGoalForm : Form
         UiTheme.StyleMenu(moreMenu);
         moreMenu.Opening += (_, _) =>
         {
-            clearToday.Text = currentView == MainView.Tomorrow ? "清空明日计划" : "清空今日任务";
+            clearToday.Text = currentView switch
+            {
+                MainView.Tomorrow => "清空明日计划",
+                MainView.Inbox => "清空待办箱",
+                _ => "清空今日任务"
+            };
             darkThemeItem.Checked = UiTheme.Mode == AppThemeMode.Dark;
             lightThemeItem.Checked = UiTheme.Mode == AppThemeMode.Light;
             xuanlingThemeItem.Checked = UiTheme.Mode == AppThemeMode.Xuanling;
@@ -1144,6 +1409,19 @@ internal sealed partial class DailyGoalForm : Form
         undoTimer.Interval = UndoDurationMs;
         undoTimer.Tick += (_, _) => HideUndoBar();
 
+        undoCountdownTimer.Interval = 50;
+        undoCountdownTimer.Tick += (_, _) =>
+        {
+            if (!undoBar.Visible)
+            {
+                undoCountdownTimer.Stop();
+                return;
+            }
+
+            var elapsed = (DateTime.Now - undoShownAt).TotalMilliseconds;
+            undoBar.RemainingRatio = (float)Math.Clamp(1.0 - elapsed / UndoDurationMs, 0.0, 1.0);
+        };
+
         dateTimer.Interval = 30_000;
         dateTimer.Tick += (_, _) =>
         {
@@ -1165,8 +1443,21 @@ internal sealed partial class DailyGoalForm : Form
     private void RenderAll()
     {
         RenderScheduledTasks();
-        RenderHistory();
+        historyDirty = true;
+        if (currentView == MainView.History)
+        {
+            RenderHistory();
+        }
         UpdateHeaderStats();
+    }
+
+    private void MarkHistoryDirty()
+    {
+        historyDirty = true;
+        if (currentView == MainView.History)
+        {
+            RenderHistory();
+        }
     }
 
     private void ShowMainView(MainView view)
@@ -1179,22 +1470,29 @@ internal sealed partial class DailyGoalForm : Form
         currentView = view;
         todayTab.Active = view == MainView.Today;
         tomorrowTab.Active = view == MainView.Tomorrow;
+        inboxTab.Active = view == MainView.Inbox;
         historyTab.Active = view == MainView.History;
-        todayView.Visible = view is MainView.Today or MainView.Tomorrow;
+        todayView.Visible = view is MainView.Today or MainView.Tomorrow or MainView.Inbox;
         historyView.Visible = view == MainView.History;
         titleLabel.Text = view switch
         {
             MainView.Today => "今日计划",
             MainView.Tomorrow => "明日计划",
+            MainView.Inbox => "待办箱",
             _ => "完成记录"
         };
-        if (view is MainView.Today or MainView.Tomorrow)
+        if (view is MainView.Today or MainView.Tomorrow or MainView.Inbox)
         {
             RenderScheduledTasks();
-            taskInput.PlaceholderText = view == MainView.Today ? "写下一件想完成的事" : "提前安排明天的事";
+            taskInput.PlaceholderText = view switch
+            {
+                MainView.Tomorrow => "提前安排明天的事（Shift+Enter 记入今日）",
+                MainView.Inbox => "记录稍后要做的事，不会自动结转",
+                _ => "写下一件想完成的事（支持 !重点 / 明天 / 每天 / #颜色）"
+            };
         }
         UpdateDateText();
-        if (view == MainView.History)
+        if (view == MainView.History && historyDirty)
         {
             RenderHistory();
         }
@@ -1202,6 +1500,18 @@ internal sealed partial class DailyGoalForm : Form
 
     private void ShowSettings()
     {
+        if (templateView.Visible)
+        {
+            HideTemplateManager();
+        }
+        if (recurringView.Visible)
+        {
+            HideRecurringManager();
+        }
+        if (reviewView.Visible)
+        {
+            HideDailyReview();
+        }
         settingsVisible = true;
         ApplySettingsToControls();
         SetMainChromeVisible(false);
@@ -1225,14 +1535,16 @@ internal sealed partial class DailyGoalForm : Form
         dateLabel.Visible = visible;
         dragGrip.Visible = visible;
         progressRing.Visible = visible;
-        themeCharacter.Visible = visible && UiTheme.Mode == AppThemeMode.Xuanling && xuanlingAvatar is not null;
+        themeCharacter.Visible = visible && themeCharacter.CharacterImage is not null;
+        pinButton.Visible = visible;
         settingsButton.Visible = visible;
         moreButton.Visible = visible;
         closeButton.Visible = visible;
         todayTab.Visible = visible;
         tomorrowTab.Visible = visible;
+        inboxTab.Visible = visible;
         historyTab.Visible = visible;
-        todayView.Visible = visible && currentView is MainView.Today or MainView.Tomorrow;
+        todayView.Visible = visible && currentView is MainView.Today or MainView.Tomorrow or MainView.Inbox;
         historyView.Visible = visible && currentView == MainView.History;
     }
 
@@ -1246,6 +1558,14 @@ internal sealed partial class DailyGoalForm : Form
         particleChoice.Selected = state.Settings.ParticleIntensity;
         reducedMotionToggle.Checked = state.Settings.ReducedMotion;
         startupToggle.Checked = state.Settings.StartWithWindows;
+        closeToTrayToggle.Checked = state.Settings.CloseToTray;
+        soundToggle.Checked = state.Settings.SoundEnabled;
+        var focusIdx = Array.IndexOf(AppSettings.FocusMinuteChoices, state.Settings.DefaultFocusMinutes);
+        focusMinutesChips.SelectedIndex = focusIdx >= 0 ? focusIdx : 1;
+        var retentionIdx = Array.IndexOf(AppSettings.HistoryRetentionChoices, state.Settings.HistoryRetentionDays);
+        historyRetentionChips.SelectedIndex = retentionIdx >= 0 ? retentionIdx : 0;
+        resetArtworkButton.Visible = !string.IsNullOrWhiteSpace(state.Settings.CustomAvatarPath)
+            || !string.IsNullOrWhiteSpace(state.Settings.CustomScenePath);
         hideDelaySlider.Enabled = state.Settings.AutoHideEnabled;
         themeChoice.SelectedTheme = state.Settings.Theme;
         dockChips.SelectedIndex = (int)state.Settings.DockSide;
@@ -1323,6 +1643,10 @@ internal sealed partial class DailyGoalForm : Form
         state.Settings.ParticleIntensity = particleChoice.Selected;
         state.Settings.ReducedMotion = reducedMotionToggle.Checked;
         state.Settings.StartWithWindows = startupToggle.Checked;
+        state.Settings.CloseToTray = closeToTrayToggle.Checked;
+        state.Settings.SoundEnabled = soundToggle.Checked;
+        state.Settings.DefaultFocusMinutes = AppSettings.FocusMinuteChoices[Math.Clamp(focusMinutesChips.SelectedIndex, 0, AppSettings.FocusMinuteChoices.Length - 1)];
+        state.Settings.HistoryRetentionDays = AppSettings.HistoryRetentionChoices[Math.Clamp(historyRetentionChips.SelectedIndex, 0, AppSettings.HistoryRetentionChoices.Length - 1)];
         state.Settings.DockSide = (DockSide)dockChips.SelectedIndex;
         if (screenChips is not null && availableScreens.Length > 0)
         {
@@ -1419,6 +1743,12 @@ internal sealed partial class DailyGoalForm : Form
 
     private void UpdateDateText()
     {
+        if (currentView == MainView.Inbox)
+        {
+            dateLabel.Text = "不绑定日期 · 随时排入今日或明日";
+            return;
+        }
+
         var date = currentView == MainView.Tomorrow ? currentDate.AddDays(1) : currentDate;
         dateLabel.Text = date.ToDateTime(TimeOnly.MinValue).ToString("M 月 d 日  dddd", new CultureInfo("zh-CN"));
     }
@@ -1437,10 +1767,15 @@ internal sealed partial class DailyGoalForm : Form
             var tomorrowCount = state.TasksForDate(currentDate.AddDays(1)).Count();
             remainingLabel.Text = tomorrowCount == 0 ? "明天还没有计划" : $"明天计划 {tomorrowCount} 项";
         }
+        else if (currentView == MainView.Inbox)
+        {
+            var inboxCount = state.InboxTasks.Count();
+            remainingLabel.Text = inboxCount == 0 ? "待办箱还没有备忘" : $"待办箱 {inboxCount} 项";
+        }
         else
         {
             remainingLabel.Text = active == 0
-                ? completedToday > 0 ? "今天已全部完成" : "今天还没有任务"
+                ? completedToday > 0 ? "今天已全部完成 ✨" : "今天还没有任务"
                 : $"{active} 个待办";
         }
         var progress = total == 0 ? 0f : (float)completedToday / total;
@@ -1462,6 +1797,7 @@ internal sealed partial class DailyGoalForm : Form
     {
         if (stateStore.Save(state, out var error))
         {
+            EnsureExternalFileWatcherStarted();
             if (!backupService.EnsureDailySnapshot(state, currentDate, out var backupError) && !backupWarningShown)
             {
                 backupWarningShown = true;
@@ -1472,6 +1808,201 @@ internal sealed partial class DailyGoalForm : Form
 
         ShowTransientStatus(error ?? "任务暂时无法保存。", true);
         return false;
+    }
+
+    private void StartExternalFileWatcher()
+    {
+        if (stateFileWatcher is not null || !Directory.Exists(stateStore.DataDirectory))
+        {
+            return;
+        }
+
+        stateFileWatcher = new StateFileWatcher(
+            stateStore.DataDirectory,
+            stateStore.DataFile,
+            () => stateStore.IsOwnWriteRecent(),
+            HandleExternalFileChangeAsync);
+    }
+
+    private void EnsureExternalFileWatcherStarted()
+    {
+        if (stateFileWatcher is null && Directory.Exists(stateStore.DataDirectory))
+        {
+            StartExternalFileWatcher();
+        }
+    }
+
+    private void HandleExternalFileChangeAsync()
+    {
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            try
+            {
+                BeginInvoke(ApplyExternalFileReload);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            return;
+        }
+
+        ApplyExternalFileReload();
+    }
+
+    internal bool ApplyExternalFileReload()
+    {
+        if (IsDisposed || Disposing || !stateStore.TryReadExternalUpdate(currentDate, out var updated) || updated is null)
+        {
+            return false;
+        }
+
+        var localSettings = state.Settings.Clone();
+        state = updated;
+        state.Settings = localSettings;
+        state.Normalize(currentDate);
+        recurrenceService.EnsureTasksForDate(state, currentDate, clock.Now);
+        HideUndoBar();
+        RenderAll();
+        if (reviewView.Visible)
+        {
+            RefreshReviewView();
+        }
+        ShowTransientStatus("已同步外部数据更新");
+        return true;
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            try
+            {
+                BeginInvoke(() => OnDisplaySettingsChanged(sender, e));
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            return;
+        }
+
+        availableScreens = Screen.AllScreens;
+        ApplyDockPlacement();
+    }
+
+    private void PlayFeedbackSound(FeedbackSoundKind kind)
+    {
+        if (suppressDialogs || !trayEnabled)
+        {
+            return;
+        }
+
+        SoundFeedback.Play(kind, state.Settings.SoundEnabled);
+    }
+
+    private void ChooseCustomArtwork(bool isAvatar)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = isAvatar ? "选择标题栏陪伴头像" : "选择空态与背景水印插画",
+            Filter = "图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif",
+            CheckFileExists = true,
+            RestoreDirectory = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        using var testLoad = LoadImageFile(dialog.FileName);
+        if (testLoad is null)
+        {
+            ShowStorageWarning("所选图片无法读取，请尝试 PNG 或 JPG 格式。");
+            return;
+        }
+
+        try
+        {
+            var customDir = Path.Combine(DataDirectory, "custom-theme");
+            Directory.CreateDirectory(customDir);
+            var ext = Path.GetExtension(dialog.FileName);
+            if (string.IsNullOrWhiteSpace(ext))
+            {
+                ext = ".png";
+            }
+
+            var targetName = isAvatar ? $"avatar{ext}" : $"scene{ext}";
+            var targetPath = Path.Combine(customDir, targetName);
+            File.Copy(dialog.FileName, targetPath, overwrite: true);
+
+            if (isAvatar)
+            {
+                state.Settings.CustomAvatarPath = targetPath;
+            }
+            else
+            {
+                state.Settings.CustomScenePath = targetPath;
+            }
+
+            if (!SaveState())
+            {
+                return;
+            }
+
+            ReloadCustomArtwork();
+            ApplyThemeArtwork();
+            ApplySettingsToControls();
+            ShowTransientStatus(isAvatar ? "已更新陪伴头像" : "已更新背景插画");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            ShowStorageWarning($"无法保存图片：{ex.Message}");
+        }
+    }
+
+    private void ResetCustomArtwork()
+    {
+        state.Settings.CustomAvatarPath = null;
+        state.Settings.CustomScenePath = null;
+        if (!SaveState())
+        {
+            return;
+        }
+
+        ReloadCustomArtwork();
+        ApplyThemeArtwork();
+        ApplySettingsToControls();
+        ShowTransientStatus("已恢复默认陪伴插画");
+    }
+
+    private void ShowReportMenu()
+    {
+        reportMenu.Items.Clear();
+        var dailyCopy = new ToolStripMenuItem("复制今日 Markdown 日报");
+        dailyCopy.Click += (_, _) => CopyDailyReportToClipboard();
+        var weeklyCopy = new ToolStripMenuItem("复制近 7 天 Markdown 周报");
+        weeklyCopy.Click += (_, _) => CopyWeeklyReportToClipboard();
+        var exportMd = new ToolStripMenuItem("导出为 .md 文件…");
+        exportMd.Click += (_, _) => ExportWeeklyReportFile();
+        reportMenu.Items.AddRange([dailyCopy, weeklyCopy, new ToolStripSeparator(), exportMd]);
+        reportMenu.Font = UiTheme.BodyFont;
+        UiTheme.StyleMenu(reportMenu);
+        reportMenu.Show(exportReportButton, new Point(0, exportReportButton.Height + 2));
     }
 
     private void ShowTransientStatus(string message, bool error = false)
@@ -1576,6 +2107,13 @@ internal sealed partial class DailyGoalForm : Form
         if (disposing && !resourcesDisposed)
         {
             resourcesDisposed = true;
+            if (displaySettingsSubscribed)
+            {
+                SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+                displaySettingsSubscribed = false;
+            }
+            stateFileWatcher?.Dispose();
+            stateFileWatcher = null;
             CancelRowAnimationTimers();
             if (particleTimerBoosted)
             {
@@ -1586,6 +2124,8 @@ internal sealed partial class DailyGoalForm : Form
             hoverTimer.Dispose();
             particleTimer.Dispose();
             undoTimer.Dispose();
+            undoCountdownTimer.Dispose();
+            focusTimer.Dispose();
             dateTimer.Dispose();
             statusTimer.Dispose();
             particleClock.Stop();
@@ -1603,10 +2143,15 @@ internal sealed partial class DailyGoalForm : Form
             moreMenu.Dispose();
             taskMenu.Dispose();
             templateMenu.Dispose();
+            reportMenu.Dispose();
             xuanlingAvatar?.Dispose();
             xuanlingAvatar = null;
             xuanlingScene?.Dispose();
             xuanlingScene = null;
+            customAvatar?.Dispose();
+            customAvatar = null;
+            customScene?.Dispose();
+            customScene = null;
         }
 
         base.Dispose(disposing);

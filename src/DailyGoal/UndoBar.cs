@@ -9,17 +9,34 @@ namespace DailyGoal;
 internal sealed class UndoBar : Control
 {
 	private bool hovered;
+	private float remainingRatio = 1f;
 
 	[Browsable(false)]
 	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
 	public string Message { get; set; } = "";
+
+	[Browsable(false)]
+	[DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+	public float RemainingRatio
+	{
+		get => remainingRatio;
+		set
+		{
+			var clamped = Math.Clamp(value, 0f, 1f);
+			if (Math.Abs(clamped - remainingRatio) > 0.005f)
+			{
+				remainingRatio = clamped;
+				Invalidate();
+			}
+		}
+	}
 
 	public event EventHandler? UndoClicked;
 
 	public UndoBar()
 	{
 		SetStyle(ControlStyles.UserPaint | ControlStyles.Selectable | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, value: true);
-		BackColor = UiTheme.WindowTop;
+		BackColor = UiTheme.Canvas;
 		Cursor = Cursors.Hand;
 		base.TabStop = true;
 	}
@@ -65,7 +82,7 @@ internal sealed class UndoBar : Control
 		RectangleF rectangleF = new RectangleF(1f, 1f, base.Width - 2, base.Height - 3);
 		using GraphicsPath path = PaintHelpers.RoundRect(rectangleF, UiTheme.RadiusMedium);
 		using GraphicsPath path2 = PaintHelpers.RoundRect(new RectangleF(2f, 4f, base.Width - 4, base.Height - 4), UiTheme.RadiusMedium);
-		using SolidBrush brush = new SolidBrush(Color.FromArgb(50, 0, 0, 0));
+		using SolidBrush brush = new SolidBrush(UiTheme.CardShadow);
 		e.Graphics.FillPath(brush, path2);
 		using SolidBrush brush2 = new SolidBrush(hovered ? UiTheme.SurfaceHover : UiTheme.Surface);
 		e.Graphics.FillPath(brush2, path);
@@ -75,6 +92,20 @@ internal sealed class UndoBar : Control
 		using GraphicsPath path3 = PaintHelpers.RoundRect(new RectangleF(rectangleF.Left + UiTheme.Sf(7), rectangleF.Top + UiTheme.Sf(9), UiTheme.Sf(4), rectangleF.Height - UiTheme.Sf(18)), UiTheme.Sf(2));
 		using SolidBrush brush3 = new SolidBrush(UiTheme.WithAlpha(UiTheme.Mint, 220));
 		e.Graphics.FillPath(brush3, path3);
+		if (remainingRatio > 0.01f)
+		{
+			var barLeft = rectangleF.Left + UiTheme.Sf(16);
+			var barMaxWidth = Math.Max(0f, rectangleF.Width - UiTheme.Sf(30));
+			var barWidth = barMaxWidth * remainingRatio;
+			if (barWidth >= 2f)
+			{
+				using var countdownPath = PaintHelpers.RoundRect(
+					new RectangleF(barLeft, rectangleF.Bottom - UiTheme.Sf(4), barWidth, UiTheme.Sf(2.4f)),
+					UiTheme.Sf(1.2f));
+				using var countdownBrush = new SolidBrush(UiTheme.WithAlpha(UiTheme.Mint, 175));
+				e.Graphics.FillPath(countdownBrush, countdownPath);
+			}
+		}
 		TextRenderer.DrawText(e.Graphics, Message, UiTheme.SmallBoldFont, new Rectangle(UiTheme.S(22), 0, base.Width - UiTheme.S(94), base.Height), UiTheme.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
 		TextRenderer.DrawText(e.Graphics, "撤销", UiTheme.BodyBoldFont, new Rectangle(base.Width - UiTheme.S(70), 0, UiTheme.S(56), base.Height), hovered ? UiTheme.AccentHover : UiTheme.Mint, TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter);
 	}
